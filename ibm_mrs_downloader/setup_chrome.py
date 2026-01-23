@@ -108,112 +108,52 @@ def setup_chrome_and_chromedriver():
         print(f"[ERROR] {e}")
         return False
     
-    # 2. Pobierz i parsuj stronę HTML index
-    print(f"\n[INFO] Pobieranie strony index chrome-for-testing...")
+    
+    # 2. Pobierz informacje o wersji stable z GitHub (omija firewall)
+    print(f"\n[INFO] Pobieranie informacji o wersji stable...")
+    CHROME_JSON_URL = "https://raw.githubusercontent.com/GoogleChromeLabs/chrome-for-testing/refs/heads/main/data/last-known-good-versions-with-downloads.json"
+    
     try:
-        from html.parser import HTMLParser
-        
-        # Parser HTML do wyciągania linków
-        class ChromeLinksParser(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.in_stable = False
-                self.in_code = False
-                self.current_data = []
-                self.version = None
-                self.chrome_urls = {}  # platform -> url
-                self.chromedriver_urls = {}  # platform -> url
-                self.current_binary_type = None
-                self.current_platform = None
-                
-            def handle_starttag(self, tag, attrs):
-                if tag == 'h2':
-                    self.in_stable = False
-                elif tag == 'code':
-                    self.in_code = True
-                    
-            def handle_endtag(self, tag):
-                if tag == 'code':
-                    self.in_code = False
-                    
-            def handle_data(self, data):
-                data = data.strip()
-                if not data:
-                    return
-                    
-                # Sprawdź czy to nagłówek Stable
-                if data == 'Stable':
-                    self.in_stable = True
-                    return
-                
-                if not self.in_stable:
-                    return
-                
-                if self.in_code:
-                    # Zbieraj dane z bloków code
-                    if not self.version and '.' in data and data[0].isdigit():
-                        # To wersja (np. 144.0.7559.96)
-                        self.version = data
-                        print(f"[INFO] Wersja stable: {self.version}")
-                    elif data in ['chrome', 'chromedriver', 'chrome-headless-shell']:
-                        self.current_binary_type = data
-                    elif data in ['linux64', 'mac-arm64', 'mac-x64', 'win32', 'win64']:
-                        self.current_platform = data
-                    elif data.startswith('https://') and self.current_binary_type and self.current_platform:
-                        # To URL
-                        if self.current_binary_type == 'chrome':
-                            self.chrome_urls[self.current_platform] = data
-                        elif self.current_binary_type == 'chromedriver':
-                            self.chromedriver_urls[self.current_platform] = data
-                        # Reset po znalezieniu URL
-                        self.current_binary_type = None
-                        self.current_platform = None
-        
-        # Pobierz stronę HTML
-        index_url = "https://googlechromelabs.github.io/chrome-for-testing/"
-        request = Request(index_url, headers={'User-Agent': 'Mozilla/5.0'})
+        request = Request(CHROME_JSON_URL, headers={'User-Agent': 'Mozilla/5.0'})
         with urlopen(request, timeout=30) as response:
-            html_content = response.read().decode('utf-8')
+            data = json.loads(response.read().decode())
+    except Exception as e:
+        print(f"[ERROR] Nie można pobrać informacji o wersjach: {e}")
+        return False
+    
+    # 3. Znajdź URLe dla Chrome i ChromeDriver
+    try:
+        channels = data['channels']
+        stable = channels['Stable']
+        version = stable['version']
+        print(f"[INFO] Wersja stable: {version}")
         
-        # Parsuj HTML
-        parser = ChromeLinksParser()
-        parser.feed(html_content)
+        # Znajdź Chrome
+        chrome_downloads = stable['downloads'].get('chrome', [])
+        chrome_url = None
+        for download in chrome_downloads:
+            if download['platform'] == platform_name:
+                chrome_url = download['url']
+                break
         
-        if not parser.version:
-            print("[ERROR] Nie znaleziono wersji stable")
+        # Znajdź ChromeDriver
+        chromedriver_downloads = stable['downloads'].get('chromedriver', [])
+        chromedriver_url = None
+        for download in chromedriver_downloads:
+            if download['platform'] == platform_name:
+                chromedriver_url = download['url']
+                break
+        
+        if not chrome_url or not chromedriver_url:
+            print(f"[ERROR] Nie znaleziono pakietów dla platformy {platform_name}")
             return False
             
-        version = parser.version
+        print(f"[INFO] Chrome URL: {chrome_url}")
+        print(f"[INFO] ChromeDriver URL: {chromedriver_url}")
         
-    except Exception as e:
-        print(f"[ERROR] Nie można pobrać lub sparsować strony index: {e}")
+    except KeyError as e:
+        print(f"[ERROR] Błędna struktura JSON API: {e}")
         return False
-    
-    # 3. Znajdź URLe dla odpowiedniej platformy
-    # Mapowanie nazw platform między detect_platform a chrome-for-testing
-    platform_map = {
-        'win64': 'win64',
-        'linux64': 'linux64',
-        'mac64': 'mac-x64',
-        'macarm64': 'mac-arm64'
-    }
-    
-    chrome_testing_platform = platform_map.get(platform_name)
-    if not chrome_testing_platform:
-        print(f"[ERROR] Nieznana platforma: {platform_name}")
-        return False
-    
-    chrome_url = parser.chrome_urls.get(chrome_testing_platform)
-    chromedriver_url = parser.chromedriver_urls.get(chrome_testing_platform)
-    
-    if not chrome_url or not chromedriver_url:
-        print(f"[ERROR] Nie znaleziono pakietów dla platformy {chrome_testing_platform}")
-        print(f"       Dostępne platformy Chrome: {list(parser.chrome_urls.keys())}")
-        print(f"       Dostępne platformy ChromeDriver: {list(parser.chromedriver_urls.keys())}")
-        return False
-        
-    print(f"[INFO] Chrome URL: {chrome_url}")
-    print(f"[INFO] ChromeDriver URL: {chromedriver_url}")
     
     # 4. Przygotuj katalogi
     script_dir = Path(__file__).parent
