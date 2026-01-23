@@ -4,7 +4,7 @@
 VENV_DIR="venv"
 
 echo "========================================================"
-echo " IBM OpenSSH Downloader - Setup & Run (Linux/AIX)"
+echo " IBM MRS Downloader - Setup & Run (Linux/AIX)"
 echo "========================================================"
 
 # Sprawdz czy python3 jest dostepny

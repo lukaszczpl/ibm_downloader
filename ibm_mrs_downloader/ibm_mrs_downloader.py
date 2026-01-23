@@ -1,16 +1,16 @@
 """
-IBM OpenSSH Package Downloader
-Pobiera pakiety OpenSSH ze strony IBM z autoryzacja przez konto Google.
+IBM MRS Downloader
+Pobiera pakiety OpenSSH (i inne) ze strony IBM z autoryzacja przez konto Google lub IBMid.
 
 Wymagania:
     pip install selenium webdriver-manager requests
 
 Uzycie:
     # Tryb interaktywny (reczne logowanie)
-    python ibm_openssh_downloader.py
+    python ibm_mrs_downloader.py
     
     # Tryb automatycznego logowania (z pliku credentials)
-    python ibm_openssh_downloader.py --auto-login credentials.ini
+    python ibm_mrs_downloader.py --auto-login credentials.ini
     
     # Format pliku credentials.ini:
     # [google]
@@ -358,7 +358,7 @@ class IBMOpenSSHDownloader:
     def run(self, version_filter: str = None, credentials_file: str = None, headless: bool = False):
         """Glowna metoda."""
         print("\n" + "="*60)
-        print("IBM OpenSSH Package Downloader")
+        print("IBM MRS Downloader")
         print("="*60)
         
         try:
@@ -458,21 +458,21 @@ class IBMOpenSSHDownloader:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Pobiera pakiety OpenSSH (.tar.Z) ze strony IBM",
+        description="Pobiera pakiety OpenSSH (.tar.Z) i inne ze strony IBM MRS",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Przyklady uzycia:
+przyklady uzycia:
   # Tryb interaktywny (zapisuje profil w .chrome_profile)
-  python ibm_openssh_downloader.py
+  python ibm_mrs_downloader.py
 
   # Tryb batch (uzywa zapisanego profilu)
-  python ibm_openssh_downloader.py --auto-login secrets.ini --headless
+  python ibm_mrs_downloader.py --auto-login --headless
 
   # Wlasna sciezka profilu
-  python ibm_openssh_downloader.py --profile-dir /tmp/my_chrome_profile
+  python ibm_mrs_downloader.py --profile-dir /tmp/my_chrome_profile
   
   # Uzycie proxy
-  python ibm_openssh_downloader.py --proxy http://user:pass@proxy.corp:8080
+  python ibm_mrs_downloader.py --proxy http://user:pass@proxy.corp:8080
 
 Format pliku credentials (.ini):
   [ibm]
@@ -483,7 +483,7 @@ Format pliku credentials (.ini):
     
     parser.add_argument("-d", "--download-dir", help="Katalog docelowy", default=None)
     parser.add_argument("-v", "--version", help="Filtr wersji (np. '9.6')", default=None)
-    parser.add_argument("--auto-login", help="Sciezka do pliku credentials.ini", default=None)
+    parser.add_argument("--auto-login", nargs='?', const="credentials.ini", help="Wlacz auto-logowanie (domyslnie z pliku credentials.ini)", default=None)
     parser.add_argument("--headless", help="Uruchom bez GUI (dla serwerow/batch)", action="store_true")
     parser.add_argument("--profile-dir", help="Sciezka do profilu Chrome (domyslnie .chrome_profile)", default=None)
     parser.add_argument("--proxy", help="Adres serwera proxy (http://user:pass@host:port)", default=None)

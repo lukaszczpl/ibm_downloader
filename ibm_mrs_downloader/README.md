@@ -1,4 +1,4 @@
-# IBM OpenSSH Package Downloader
+# IBM MRS Downloader
 
 Skrypt do automatycznego pobierania pakietów OpenSSH ze strony IBM. Obsługuje logowanie przez IBMid oraz Google, pracę w trybie headless (na serwerach), konfigurację proxy oraz wznawianie sesji.
 
@@ -44,10 +44,10 @@ python ibm_mrs_downloader.py
 
 ### 2. Tryb Headless (Bez GUI)
 Idealny dla serwerów lub harmonogramów zadań. Działa w tle.
-Wymaga skonfigurowanego pliku credentials lub aktywnej (zapisanej wcześniej) sesji.
+Wymaga skonfigurowanego pliku `credentials.ini` lub aktywnej (zapisanej wcześniej) sesji.
 
 ```bash
-python ibm_mrs_downloader.py --headless --auto-login secrets.ini
+python ibm_mrs_downloader.py --headless --auto-login
 ```
 
 ### 3. Użycie Proxy
@@ -66,7 +66,7 @@ python ibm_mrs_downloader.py --profile-dir /tmp/my_custom_profile
 
 ## 🔐 Automatyczne Logowanie (`--auto-login`)
 
-Utwórz plik (np. `secrets.ini`) z danymi logowania.
+Utwórz plik `credentials.ini` z danymi logowania.
 **Ostrzeżenie:** Plik zawiera hasła otwartym tekstem. Chroń go!
 
 ```ini
@@ -84,6 +84,6 @@ Możesz też użyć sekcji `[google]`, ale logowanie IBMid jest zalecane (bardzi
 | `-d`, `--download-dir` | Ścieżka do katalogu, gdzie zapisać pliki (domyślnie `./downloads`) |
 | `-v`, `--version` | Filtruj wersje pakietów (np. `9.6`) |
 | `--headless` | Uruchom przeglądarkę w trybie ukrytym (bez okna) |
-| `--auto-login PLIK` | Ścieżka do pliku `.ini` z danymi logowania |
+| `--auto-login [PLIK]` | Włącz autologowanie (opcjonalnie ścieżka do .ini, domyślnie `credentials.ini`) |
 | `--profile-dir KATALOG` | Ścieżka do profilu Chrome (zachowuje sesję) |
 | `--proxy URL` | Adres proxy (np. `http://user:pass@host:port`) |

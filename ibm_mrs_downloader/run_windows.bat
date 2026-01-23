@@ -2,7 +2,7 @@
 setlocal
 
 echo ========================================================
-echo  IBM OpenSSH Downloader - Setup and Run (Windows)
+echo  IBM MRS Downloader - Setup and Run (Windows)
 echo ========================================================
 
 REM Sprawdz czy Python jest dostepny
