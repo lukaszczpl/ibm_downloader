@@ -1,0 +1,17 @@
+# Ignore everything
+*
+
+# Whitelist specific files
+!ibm_mrs_downloader.py
+!setup_chrome.py
+!run_windows.bat
+!run_linux.sh
+!requirements.txt
+!README.md
+!.gitignore
+
+# Ignore downloaded binaries and temp files
+chrome/
+chromedriver/
+temp_chrome_setup/
+!README.md

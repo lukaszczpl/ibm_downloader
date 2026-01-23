@@ -32,13 +32,28 @@ pip install -r requirements.txt
 
 ## 🔧 Konfiguracja Offline (Firewall Korporacyjny)
 
-Jeśli firewall blokuje automatyczne pobieranie Chrome/ChromeDriver, możesz użyć lokalnych binariów:
+Jeśli firewall blokuje automatyczne pobieranie Chrome/ChromeDriver, masz dwie opcje:
 
-### 1. Pobierz ręcznie (na komputerze z internetem):
+### Opcja A: Automatyczny setup (zalecane)
+Użyj dołączonego skryptu `setup_chrome.py` (bez zewnętrznych zależności):
+
+```bash
+# Na komputerze Z DOSTĘPEM do internetu
+python setup_chrome.py
+```
+
+Skrypt automatycznie:
+- Wykryje system operacyjny i architekturę
+- Pobierze najnowszą stabilną wersję Chrome i ChromeDriver
+- Utworzy katalogi `chrome/` i `chromedriver/` z odpowiednimi binariami
+
+### Opcja B: Ręczna konfiguracja
+
+#### 1. Pobierz ręcznie (na komputerze z internetem):
 - **ChromeDriver**: https://googlechromelabs.github.io/chrome-for-testing/ (dopasuj wersję do Chrome)
 - **Chrome Portable** (opcjonalnie): https://www.chromium.org/getting-involved/download-chromium/
 
-### 2. Stwórz strukturę katalogów w folderze projektu:
+#### 2. Stwórz strukturę katalogów w folderze projektu:
 ```
 ibm_mrs_downloader/
 ├── ibm_mrs_downloader.py
