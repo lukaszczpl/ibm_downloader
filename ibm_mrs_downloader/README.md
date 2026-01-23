@@ -30,6 +30,39 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## 🔧 Konfiguracja Offline (Firewall Korporacyjny)
+
+Jeśli firewall blokuje automatyczne pobieranie Chrome/ChromeDriver, możesz użyć lokalnych binariów:
+
+### 1. Pobierz ręcznie (na komputerze z internetem):
+- **ChromeDriver**: https://googlechromelabs.github.io/chrome-for-testing/ (dopasuj wersję do Chrome)
+- **Chrome Portable** (opcjonalnie): https://www.chromium.org/getting-involved/download-chromium/
+
+### 2. Stwórz strukturę katalogów w folderze projektu:
+```
+ibm_mrs_downloader/
+├── ibm_mrs_downloader.py
+├── chromedriver/
+│   └── chromedriver.exe    (Windows)
+│   └── chromedriver        (Linux/AIX)
+└── chrome/                 (opcjonalnie - można użyć systemowego)
+    └── chrome.exe          (Windows)
+    └── chrome              (Linux/AIX)
+```
+
+### 3. Ustaw uprawnienia (Linux/AIX):
+```bash
+chmod +x chromedriver/chromedriver
+chmod +x chrome/chrome  # jeśli używasz lokalnego Chrome
+```
+
+### 4. Uruchom normalnie
+Skrypt automatycznie wykryje i użyje lokalnych binariów:
+```bash
+python ibm_mrs_downloader.py --help
+# Output: [INFO] Uzywam lokalnego ChromeDriver: ...
+```
+
 ## 🚀 Użycie
 
 Program można uruchamiać na kilka sposobów w zależności od potrzeb.

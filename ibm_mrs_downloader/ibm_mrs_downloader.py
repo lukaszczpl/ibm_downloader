@@ -106,7 +106,28 @@ class IBMOpenSSHDownloader:
         # User agent
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         
-        service = Service(ChromeDriverManager().install())
+        # Sprawdz lokalne binaria Chrome i ChromeDriver
+        script_dir = Path(__file__).parent
+        chromedriver_name = "chromedriver.exe" if os.name == 'nt' else "chromedriver"
+        chrome_name = "chrome.exe" if os.name == 'nt' else "chrome"
+        
+        local_chromedriver = script_dir / "chromedriver" / chromedriver_name
+        local_chrome = script_dir / "chrome" / chrome_name
+        
+        # Uzyj lokalnych binariow jesli istnieja
+        if local_chromedriver.exists():
+            print(f"[INFO] Uzywam lokalnego ChromeDriver: {local_chromedriver}")
+            service = Service(executable_path=str(local_chromedriver))
+            
+            if local_chrome.exists():
+                print(f"[INFO] Uzywam lokalnego Chrome: {local_chrome}")
+                chrome_options.binary_location = str(local_chrome)
+            else:
+                print("[INFO] ChromeDriver lokalny, Chrome systemowy")
+        else:
+            print("[INFO] Pobieram ChromeDriver automatycznie...")
+            service = Service(ChromeDriverManager().install())
+        
         self.driver = webdriver.Chrome(service=service, options=chrome_options)
         self.wait = WebDriverWait(self.driver, 30)
         
@@ -117,6 +138,7 @@ class IBMOpenSSHDownloader:
         mode = "headless" if headless else "GUI"
         print(f"[OK] Przegladarka uruchomiona w trybie {mode}")
         print(f"     Profil przegladarki: {self.profile_dir}")
+
 
     def _transfer_cookies_to_requests(self):
         """Przenosi ciasteczka z Selenium do sesji requests."""
