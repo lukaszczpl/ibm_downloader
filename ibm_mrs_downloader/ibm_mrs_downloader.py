@@ -99,6 +99,13 @@ class IBMOpenSSHDownloader:
         else:
             chrome_options.add_argument("--start-maximized")
         
+        # Dodatkowe flagi dla Linux (zapobiega zawieszaniu na serwerach)
+        if os.name == 'posix':  # Linux/Unix/AIX
+            chrome_options.add_argument("--disable-software-rasterizer")
+            chrome_options.add_argument("--disable-extensions")
+            chrome_options.add_argument("--disable-setuid-sandbox")
+            chrome_options.add_argument("--single-process")  # Dla środowisk bez fork()
+        
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option("useAutomationExtension", False)
