@@ -104,7 +104,7 @@ class IBMOpenSSHDownloader:
             chrome_options.add_argument("--disable-software-rasterizer")
             chrome_options.add_argument("--disable-extensions")
             chrome_options.add_argument("--disable-setuid-sandbox")
-            chrome_options.add_argument("--single-process")  # Dla środowisk bez fork()
+            # UWAGA: --single-process usunięte - powodowało crash na niektórych systemach
         
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -124,18 +124,47 @@ class IBMOpenSSHDownloader:
         # Uzyj lokalnych binariow jesli istnieja
         if local_chromedriver.exists():
             print(f"[INFO] Uzywam lokalnego ChromeDriver: {local_chromedriver}")
-            service = Service(executable_path=str(local_chromedriver))
+            # Włącz verbose logging dla diagnostyki problemów
+            service = Service(
+                executable_path=str(local_chromedriver),
+                log_output=os.path.devnull  # Można zmienić na ścieżkę pliku dla debugowania
+            )
             
             if local_chrome.exists():
                 print(f"[INFO] Uzywam lokalnego Chrome: {local_chrome}")
                 chrome_options.binary_location = str(local_chrome)
+                
+                # Sprawdź uprawnienia wykonywania (Linux)
+                if os.name == 'posix' and not os.access(local_chrome, os.X_OK):
+                    print(f"[WARN] Brak uprawnien wykonywania dla {local_chrome}")
+                    print(f"       Uruchom: chmod +x {local_chrome}")
             else:
                 print("[INFO] ChromeDriver lokalny, Chrome systemowy")
         else:
             print("[INFO] Pobieram ChromeDriver automatycznie...")
             service = Service(ChromeDriverManager().install())
         
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        try:
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        except Exception as e:
+            print(f"\n[ERROR] Nie udało się uruchomić Chrome: {e}")
+            if os.name == 'posix':
+                print("\n[DIAGNOSTYKA LINUX]")
+                print("Możliwe przyczyny:")
+                print("1. Brakujące biblioteki systemowe:")
+                print("   sudo apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 \\")
+                print("       libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \\")
+                print("       libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2")
+                print("\n2. Brak uprawnień wykonywania:")
+                if local_chrome.exists():
+                    print(f"   chmod +x {local_chrome}")
+                if local_chromedriver.exists():
+                    print(f"   chmod +x {local_chromedriver}")
+                print("\n3. Uruchom chrome ręcznie do testu:")
+                if local_chrome.exists():
+                    print(f"   {local_chrome} --version")
+            raise
+        
         self.wait = WebDriverWait(self.driver, 30)
         
         self.driver.execute_script(
