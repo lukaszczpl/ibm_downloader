@@ -72,11 +72,6 @@ class IBMOpenSSHDownloader:
         
         chrome_options = Options()
         
-        # Proxy dla Chrome
-        if self.proxy:
-            chrome_options.add_argument(f'--proxy-server={self.proxy}')
-            print(f"[INFO] Ustawiono proxy dla Chrome: {self.proxy}")
-        
         # Staly profil uzytkownika (zachowuje cookies, zaufane urzadzenie, etc.)
         chrome_options.add_argument(f"user-data-dir={os.path.abspath(self.profile_dir)}")
         
@@ -90,21 +85,18 @@ class IBMOpenSSHDownloader:
         }
         chrome_options.add_experimental_option("prefs", prefs)
         
-        if headless:
-            chrome_options.add_argument("--headless=new")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--window-size=1920,1080")
-        else:
-            chrome_options.add_argument("--start-maximized")
+        # Standardowe flagi dla obu platform
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--ignore-certificate-errors")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--screenshot")
+        chrome_options.add_argument("--window-size=1920,1080")
         
-        # Dodatkowe flagi dla Linux (zapobiega zawieszaniu na serwerach)
-        if os.name == 'posix':  # Linux/Unix/AIX
-            chrome_options.add_argument("--disable-software-rasterizer")
-            chrome_options.add_argument("--disable-extensions")
-            chrome_options.add_argument("--disable-setuid-sandbox")
-            # UWAGA: --single-process usunięte - powodowało crash na niektórych systemach
+        # Proxy dla Chrome (jesli podane)
+        if self.proxy:
+            chrome_options.add_argument(f'--proxy-server={self.proxy}')
+            print(f"[INFO] Ustawiono proxy dla Chrome: {self.proxy}")
         
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -113,10 +105,15 @@ class IBMOpenSSHDownloader:
         # User agent
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         
-        # Sprawdz lokalne binaria Chrome i ChromeDriver
+        # Sprawdz lokalne binaria Chrome i ChromeDriver - platforma-zaleznie
         script_dir = Path(__file__).parent
         chromedriver_name = "chromedriver.exe" if os.name == 'nt' else "chromedriver"
-        chrome_name = "chrome.exe" if os.name == 'nt' else "chrome"
+        
+        # Platforma-specyficzne nazwy binarek Chrome
+        if os.name == 'nt':  # Windows
+            chrome_name = "chrome.exe"
+        else:  # Linux
+            chrome_name = "chrome-headless-shell"
         
         local_chromedriver = script_dir / "chromedriver" / chromedriver_name
         local_chrome = script_dir / "chrome" / chrome_name
@@ -124,10 +121,9 @@ class IBMOpenSSHDownloader:
         # Uzyj lokalnych binariow jesli istnieja
         if local_chromedriver.exists():
             print(f"[INFO] Uzywam lokalnego ChromeDriver: {local_chromedriver}")
-            # Włącz verbose logging dla diagnostyki problemów
             service = Service(
                 executable_path=str(local_chromedriver),
-                log_output=os.path.devnull  # Można zmienić na ścieżkę pliku dla debugowania
+                log_output=os.path.devnull
             )
             
             if local_chrome.exists():
@@ -170,6 +166,16 @@ class IBMOpenSSHDownloader:
         self.driver.execute_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
+        
+        # Zrzut ekranu inicjalny (debugowanie)
+        screenshot_dir = script_dir / ".screenshot"
+        screenshot_dir.mkdir(exist_ok=True)
+        screenshot_path = screenshot_dir / "initial_screenshot.png"
+        try:
+            self.driver.save_screenshot(str(screenshot_path))
+            print(f"[INFO] Zapisano zrzut ekranu: {screenshot_path}")
+        except Exception as e:
+            print(f"[WARN] Nie udalo sie zapisac zrzutu ekranu: {e}")
         
         mode = "headless" if headless else "GUI"
         print(f"[OK] Przegladarka uruchomiona w trybie {mode}")
