@@ -93,20 +93,15 @@ class IBMOpenSSHDownloader:
         chrome_options.add_argument("--screenshot")
         chrome_options.add_argument("--window-size=1920,1080")
         
-        # Proxy dla Chrome (jesli podane)
-        if self.proxy:
-            chrome_options.add_argument(f'--proxy-server={self.proxy}')
-            print(f"[INFO] Ustawiono proxy dla Chrome: {self.proxy}")
-        
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option("useAutomationExtension", False)
+        # Włącz verbose output z Chrome (stderr/stdout)
+        script_dir = Path(__file__).parent
+        chrome_options.add_argument("--enable-logging=stderr")
+        chrome_options.add_argument("--v=1")
         
         # User agent
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         
         # Sprawdz lokalne binaria Chrome i ChromeDriver - platforma-zaleznie
-        script_dir = Path(__file__).parent
         chromedriver_name = "chromedriver.exe" if os.name == 'nt' else "chromedriver"
         
         # Platforma-specyficzne nazwy binarek Chrome
@@ -121,10 +116,14 @@ class IBMOpenSSHDownloader:
         # Uzyj lokalnych binariow jesli istnieja
         if local_chromedriver.exists():
             print(f"[INFO] Uzywam lokalnego ChromeDriver: {local_chromedriver}")
+            
+            # Włącz verbose logging dla diagnostyki (przechwytuje też output Chrome)
+            chromedriver_log = script_dir / ".chromedriver.log"
             service = Service(
                 executable_path=str(local_chromedriver),
-                log_output=os.path.devnull
+                service_args=['--verbose', '--log-path=' + str(chromedriver_log)]
             )
+            print(f"[INFO] Logi (ChromeDriver + Chrome output): {chromedriver_log}")
             
             if local_chrome.exists():
                 print(f"[INFO] Uzywam lokalnego Chrome: {local_chrome}")
