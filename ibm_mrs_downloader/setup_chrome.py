@@ -75,13 +75,28 @@ def download_file(url, dest_path):
         print(f"\n[ERROR] Błąd pobierania: {e}")
         return False
 
-def extract_zip(zip_path, extract_to):
-    """Rozpakuje archiwum ZIP."""
+def extract_zip(zip_path, extract_to, set_executable=False):
+    """Rozpakuje archiwum ZIP.
+    
+    Args:
+        zip_path: Ścieżka do archiwum ZIP
+        extract_to: Katalog docelowy
+        set_executable: Jeśli True i system to Linux, ustaw +x na wszystkie pliki (nie katalogi)
+    """
     print(f"[INFO] Rozpakowywanie: {zip_path}")
     
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(extract_to)
+        
+        # Na Linuxie nadaj uprawnienia wykonywania wszystkim plikom (z pominięciem katalogów)
+        if set_executable and platform.system().lower() == "linux":
+            print(f"[INFO] Ustawianie uprawnień wykonywalności (+x) dla plików...")
+            for root, dirs, files in os.walk(extract_to):
+                for filename in files:
+                    filepath = Path(root) / filename
+                    os.chmod(filepath, 0o755)
+        
         print(f"[OK] Rozpakowano do: {extract_to}")
         return True
     except Exception as e:
@@ -104,6 +119,7 @@ def setup_chrome_and_chromedriver():
     # 1. Wykryj platformę
     try:
         platform_name = detect_platform()
+        system_name = platform.system().lower()
     except RuntimeError as e:
         print(f"[ERROR] {e}")
         return False
@@ -121,20 +137,29 @@ def setup_chrome_and_chromedriver():
         print(f"[ERROR] Nie można pobrać informacji o wersjach: {e}")
         return False
     
-    # 3. Znajdź URLe dla Chrome i ChromeDriver
+    # 3. Znajdź URLe dla Chrome/chrome-headless-shell i ChromeDriver
     try:
         channels = data['channels']
         stable = channels['Stable']
         version = stable['version']
         print(f"[INFO] Wersja stable: {version}")
         
-        # Znajdź Chrome
-        chrome_downloads = stable['downloads'].get('chrome', [])
+        # Logika platformowa: Windows = pełny Chrome, Linux = headless-shell
         chrome_url = None
-        for download in chrome_downloads:
-            if download['platform'] == platform_name:
-                chrome_url = download['url']
-                break
+        if system_name == "windows":
+            print(f"[INFO] System: Windows - pobieranie pełnej wersji Chrome")
+            chrome_downloads = stable['downloads'].get('chrome', [])
+            for download in chrome_downloads:
+                if download['platform'] == platform_name:
+                    chrome_url = download['url']
+                    break
+        else:  # Linux, Mac
+            print(f"[INFO] System: {system_name} - pobieranie chrome-headless-shell")
+            headless_downloads = stable['downloads'].get('chrome-headless-shell', [])
+            for download in headless_downloads:
+                if download['platform'] == platform_name:
+                    chrome_url = download['url']
+                    break
         
         # Znajdź ChromeDriver
         chromedriver_downloads = stable['downloads'].get('chromedriver', [])
@@ -169,18 +194,24 @@ def setup_chrome_and_chromedriver():
     chrome_dir.mkdir(exist_ok=True)
     chromedriver_dir.mkdir(exist_ok=True)
     
-    # 5. Pobierz i rozpakuj Chrome
+    # 5. Pobierz i rozpakuj Chrome / chrome-headless-shell
     print(f"\n[1/2] Chrome")
     chrome_zip = temp_dir / "chrome.zip"
     if not download_file(chrome_url, chrome_zip):
         return False
     
     chrome_extract = temp_dir / "chrome_extracted"
-    if not extract_zip(chrome_zip, chrome_extract):
+    # Na Linuxie ustaw uprawnienia wykonywania dla wszystkich plików
+    if not extract_zip(chrome_zip, chrome_extract, set_executable=(system_name == "linux")):
         return False
     
     # Znajdź główny katalog z Chrome (zwykle jest zagnieżdżony w podkatalogu)
-    chrome_binary_name = "chrome.exe" if platform.system().lower() == "windows" else "chrome"
+    # Dla headless-shell szukamy 'chrome-headless-shell', dla pełnego Chrome szukamy 'chrome'
+    if system_name == "windows":
+        chrome_binary_name = "chrome.exe"
+    else:
+        # Na Linuxie będzie to chrome-headless-shell
+        chrome_binary_name = "chrome-headless-shell" if system_name == "linux" else "chrome"
     
     # Znajdź katalog zawierający chrome
     chrome_source_dir = None
@@ -210,7 +241,7 @@ def setup_chrome_and_chromedriver():
         
         # Ustaw uprawnienia wykonywania dla pliku chrome (Linux/Mac)
         chrome_binary_path = chrome_dir / chrome_binary_name
-        if chrome_binary_path.exists() and platform.system().lower() != "windows":
+        if chrome_binary_path.exists() and system_name != "windows":
             os.chmod(chrome_binary_path, 0o755)
         
         print(f"[OK] Chrome zainstalowany: {chrome_dir}")
@@ -231,11 +262,12 @@ def setup_chrome_and_chromedriver():
         return False
     
     chromedriver_extract = temp_dir / "chromedriver_extracted"
-    if not extract_zip(chromedriver_zip, chromedriver_extract):
+    # Na Linuxie ustaw uprawnienia wykonywania dla wszystkich plików
+    if not extract_zip(chromedriver_zip, chromedriver_extract, set_executable=(system_name == "linux")):
         return False
     
     # Znajdź główny katalog z ChromeDriver
-    chromedriver_binary_name = "chromedriver.exe" if platform.system().lower() == "windows" else "chromedriver"
+    chromedriver_binary_name = "chromedriver.exe" if system_name == "windows" else "chromedriver"
     
     # Znajdź katalog zawierający chromedriver
     chromedriver_source_dir = None
@@ -265,7 +297,7 @@ def setup_chrome_and_chromedriver():
         
         # Ustaw uprawnienia wykonywania dla chromedriver (Linux/Mac)
         chromedriver_binary_path = chromedriver_dir / chromedriver_binary_name
-        if chromedriver_binary_path.exists() and platform.system().lower() != "windows":
+        if chromedriver_binary_path.exists() and system_name != "windows":
             os.chmod(chromedriver_binary_path, 0o755)
         
         print(f"[OK] ChromeDriver zainstalowany: {chromedriver_dir}")
