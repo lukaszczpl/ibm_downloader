@@ -140,6 +140,17 @@ class IBMOpenSSHDownloader:
             print("[INFO] Pobieram ChromeDriver automatycznie...")
             service = Service(ChromeDriverManager().install())
         
+        # Wyświetl pełne wywołanie Chrome (dla debugowania)
+        print(f"\n[DEBUG] Wywołanie Chrome z następującymi parametrami:")
+        chrome_binary = chrome_options.binary_location if chrome_options.binary_location else "chrome (systemowy)"
+        print(f"[DEBUG] Binary: {chrome_binary}")
+        print(f"[DEBUG] Argumenty:")
+        for arg in chrome_options.arguments:
+            print(f"[DEBUG]   {arg}")
+        if chrome_options.experimental_options:
+            print(f"[DEBUG] Experimental options: {list(chrome_options.experimental_options.keys())}")
+        print()
+        
         try:
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
         except Exception as e:
