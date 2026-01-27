@@ -19,6 +19,7 @@ Uzycie:
 """
 
 import os
+import socket  # Dodano dla wymuszenia IPv4
 import sys
 import time
 import re
@@ -41,6 +42,20 @@ try:
     SELENIUM_AVAILABLE = True
 except ImportError:
     SELENIUM_AVAILABLE = False
+
+
+# --- Modyfikacja: Wymuszenie IPv4 (Monkey Patch) ---
+# Nadpisuje socket.getaddrinfo zeby zwracal tylko adresy IPv4 (AF_INET).
+# Dzieki temu requests, selenium i inne biblioteki nie beda probowaly laczyc sie po IPv6.
+_original_getaddrinfo = socket.getaddrinfo
+
+def _ipv4_only_getaddrinfo(*args, **kwargs):
+    responses = _original_getaddrinfo(*args, **kwargs)
+    return [response for response in responses if response[0] == socket.AF_INET]
+
+socket.getaddrinfo = _ipv4_only_getaddrinfo
+print("[INFO] Wymuszono tryb IPv4 dla wszystkich polaczen sieciowych.")
+# ---------------------------------------------------
 
 
 class IBMOpenSSHDownloader:
@@ -97,6 +112,7 @@ class IBMOpenSSHDownloader:
         script_dir = Path(__file__).parent
         chrome_options.add_argument("--enable-logging=stderr")
         chrome_options.add_argument("--v=1")
+        chrome_options.add_argument("--dns-result-order=ipv4first")  # Preferuj IPv4 w Chrome
         
         # User agent
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -121,7 +137,7 @@ class IBMOpenSSHDownloader:
             chromedriver_log = script_dir / ".chromedriver.log"
             service = Service(
                 executable_path=str(local_chromedriver),
-                service_args=['--verbose', '--log-path=' + str(chromedriver_log)]
+                service_args=['--verbose', '--log-path=' + str(chromedriver_log), '--allowed-ips=127.0.0.1']
             )
             print(f"[INFO] Logi (ChromeDriver + Chrome output): {chromedriver_log}")
             
