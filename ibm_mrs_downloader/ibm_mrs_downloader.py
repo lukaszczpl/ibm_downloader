@@ -136,8 +136,9 @@ class IBMOpenSSHDownloader:
             else:
                 print("[INFO] ChromeDriver lokalny, Chrome systemowy")
         else:
-            print("[INFO] Pobieram ChromeDriver automatycznie...")
-            service = Service(ChromeDriverManager().install())
+            print(f"[ERROR] Nie znaleziono ChromeDriver w: {local_chromedriver}")
+            print(f"        Pobierz odpowiednią wersję z: https://googlechromelabs.github.io/chrome-for-testing/")
+            raise RuntimeError(f"Brak pliku ChromeDriver: {local_chromedriver}")
         
         # Wyświetl pełne wywołanie Chrome (dla debugowania)
         print(f"\n[DEBUG] Wywołanie Chrome z następującymi parametrami:")
@@ -524,11 +525,6 @@ class IBMOpenSSHDownloader:
                     print("[OK] Przegladarka zamknieta")
                 except Exception:
                     pass
-    
-    # helpery (bez zmian)
-    def _transfer_cookies_to_requests(self):
-        for cookie in self.driver.get_cookies():
-            self.session.cookies.set(cookie['name'], cookie['value'])
 
 def main():
     parser = argparse.ArgumentParser(
