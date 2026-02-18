@@ -382,6 +382,25 @@ class IBMOpenSSHDownloader:
     # -----------------------------------------------------------------------
     # Parsowanie linków
     # -----------------------------------------------------------------------
+    @staticmethod
+    def _is_valid_tar_z_url(url: str) -> bool:
+        """Sprawdza czy URL wygląda na prawidłowy link do pliku .tar.Z."""
+        if len(url) > 500:
+            return False
+        if any(marker in url.lower() for marker in [
+            "<meta", "<script", "<link", "<div", "<style",
+            "%3cmeta", "%3cscript", "%3clink", "%3cdiv", "%3cstyle",
+            "content=", "viewport",
+        ]):
+            return False
+        try:
+            filename = urlparse(url).path.split("/")[-1]
+            if not re.match(r'^[\w.\-]+\.tar\.Z$', filename, re.IGNORECASE):
+                return False
+        except Exception:
+            return False
+        return True
+
     def _find_tar_z_links(self) -> List[str]:
         """Parsuje strone i znajduje linki do plikow .tar.Z"""
         tar_z_urls: Set[str] = set()
@@ -394,18 +413,23 @@ class IBMOpenSSHDownloader:
                 try:
                     href = link.get_attribute("href")
                     if href and href.lower().endswith(".tar.z"):
-                        tar_z_urls.add(urljoin(current_url, href))
+                        full_url = urljoin(current_url, href)
+                        if self._is_valid_tar_z_url(full_url):
+                            tar_z_urls.add(full_url)
                 except Exception:
                     continue
         except Exception:
             pass
 
         # Metoda 2: regex na page source (backup)
+        # [^"'\s<>]+ : zapobiega łapaniu URL-zakodowanego HTML
         try:
             page_source = self.driver.page_source
-            pattern = r'href=["\']([^"\']*\.tar\.Z)["\']'
+            pattern = r'href=["\']([^"\'<>\s]+\.tar\.Z)["\']'
             for match in re.findall(pattern, page_source, re.IGNORECASE):
-                tar_z_urls.add(urljoin(current_url, match))
+                full_url = urljoin(current_url, match)
+                if self._is_valid_tar_z_url(full_url):
+                    tar_z_urls.add(full_url)
         except Exception:
             pass
 
