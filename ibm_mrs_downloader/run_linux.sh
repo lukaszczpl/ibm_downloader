@@ -1,14 +1,21 @@
 #!/bin/bash
+# IBM MRS Downloader - Setup & Run (Linux, tryb batch/headless)
+# Uzycie: ./run_linux.sh [opcje]
+# Przyklad: ./run_linux.sh --auto-login credentials.ini
+#           ./run_linux.sh --auto-login credentials.ini --proxy http://proxy.corp:8080
+#           ./run_linux.sh --auto-login credentials.ini --corp-ca /etc/ssl/certs/corp-ca.pem
 
-# Nazwa katalogu venv
+set -euo pipefail
+
 VENV_DIR="venv"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "========================================================"
-echo " IBM MRS Downloader - Setup & Run (Linux/AIX)"
+echo " IBM MRS Downloader - Setup & Run (Linux batch)"
 echo "========================================================"
 
-# Sprawdz czy python3 jest dostepny
-if ! command -v python3 &> /dev/null; then
+# Sprawdz python3
+if ! command -v python3 &>/dev/null; then
     echo "[ERROR] python3 nie zostal znaleziony."
     exit 1
 fi
@@ -17,36 +24,23 @@ fi
 if [ ! -d "$VENV_DIR" ]; then
     echo "[INFO] Tworzenie wirtualnego srodowiska '$VENV_DIR'..."
     python3 -m venv "$VENV_DIR"
-    if [ $? -ne 0 ]; then
-        echo "[ERROR] Nie udalo sie utworzyc venv. Upewnij sie, ze pakiet python3-venv jest zainstalowany."
-        exit 1
-    fi
-else
-    echo "[INFO] Srodowisko '$VENV_DIR' juz istnieje."
 fi
 
-# Aktywacja venv i instalacja zaleznosci
-echo "[INFO] Sprawdzanie/Instalacja zaleznosci..."
+# Aktywacja venv
 source "$VENV_DIR/bin/activate"
 
-# Upgrade pip (opcjonalnie, dobre dla starszych systemow)
-pip install --upgrade pip > /dev/null 2>&1
-
-pip install -r requirements.txt
-if [ $? -ne 0 ]; then
-    echo "[ERROR] Blad podczas instalacji zaleznosci."
-    deactivate
-    exit 1
-fi
+# Instalacja/aktualizacja zaleznosci (cicha)
+echo "[INFO] Instalacja zaleznosci..."
+pip install --quiet --upgrade pip
+pip install --quiet -r requirements.txt
 
 echo ""
-echo "[INFO] Uruchamianie programu (Help)..."
+echo "[INFO] Uruchamianie programu..."
 echo "========================================================"
-python ibm_mrs_downloader.py --help
-echo "========================================================"
-echo ""
-echo "Aby uruchomic program pozniej, uzyj:"
-echo "source $VENV_DIR/bin/activate && python ibm_mrs_downloader.py [opcje]"
-echo ""
 
+# Przekaz wszystkie argumenty do skryptu Python
+python ibm_mrs_downloader.py "$@"
+
+EXIT_CODE=$?
 deactivate
+exit $EXIT_CODE
