@@ -3,10 +3,15 @@
 
 # Whitelist specific files
 !ibm_mrs_downloader.py
+!ibm_mrs_downloader_playwright.py
 !setup_chrome.py
+!setup_playwright.py
 !run_windows.bat
 !run_linux.sh
+!run_playwright_windows.bat
+!run_playwright_linux.sh
 !requirements.txt
+!requirements_playwright.txt
 !README.md
 !.gitignore
 
