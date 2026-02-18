@@ -272,10 +272,16 @@ class IBMOpenSSHDownloader:
         }
         chrome_options.add_experimental_option("prefs", prefs)
 
-        # --- Lokalne binaria ChromeDriver ---
+        # --- Lokalne binaria ChromeDriver (platform-aware) ---
         script_dir = Path(__file__).parent
-        local_chromedriver = script_dir / "chromedriver" / "chromedriver"
-        local_chrome = script_dir / "chrome" / "chrome-headless-shell"
+        if os.name == 'nt':  # Windows
+            chromedriver_name = "chromedriver.exe"
+            chrome_name = "chrome.exe"
+        else:  # Linux
+            chromedriver_name = "chromedriver"
+            chrome_name = "chrome-headless-shell"
+        local_chromedriver = script_dir / "chromedriver" / chromedriver_name
+        local_chrome = script_dir / "chrome" / chrome_name
 
         if not local_chromedriver.exists():
             log.error("Nie znaleziono ChromeDriver w: %s", local_chromedriver)
