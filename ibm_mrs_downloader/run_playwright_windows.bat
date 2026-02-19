@@ -63,6 +63,14 @@ if %errorlevel% neq 0 (
 )
 
 echo.
+REM Sprawdz czy chrome-headless-shell jest zainstalowane
+.\venv\Scripts\playwright install --dry-run chromium-headless-shell >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [INFO] Instalacja chrome-headless-shell...
+    .\venv\Scripts\playwright install chromium-headless-shell >nul 2>&1
+)
+
+echo.
 echo [INFO] Uruchamianie programu (Help)...
 echo ========================================================
 .\venv\Scripts\python ibm_mrs_downloader_playwright.py --help

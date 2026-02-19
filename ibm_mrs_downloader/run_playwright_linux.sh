@@ -50,13 +50,21 @@ pip install --quiet --upgrade pip
 pip install --quiet playwright requests
 
 # Sprawdz czy Chromium jest zainstalowane, zainstaluj jeśli nie
+# Instalujemy obie wersje:
+#   chromium          – pełny Chrome (domyślny, lepszy rendering i anti-detekcja)
+#   chrome-headless-shell – okrojona binarka (mniejsza, flaga --headless-shell)
 if ! playwright install --dry-run chromium &>/dev/null 2>&1; then
-    echo "[INFO] Instalacja Chromium (Playwright)..."
+    echo "[INFO] Instalacja Chromium (pelny Chrome)..."
     playwright install chromium
+fi
+if ! playwright install --dry-run chromium-headless-shell &>/dev/null 2>&1; then
+    echo "[INFO] Instalacja chrome-headless-shell..."
+    playwright install chromium-headless-shell 2>/dev/null || true
 fi
 
 echo ""
 echo "[INFO] Uruchamianie programu..."
+echo "[INFO] Domyslnie uzywa pelnego Chrome. Dodaj --headless-shell aby uzywac okrojonej binarki."
 echo "========================================================"
 
 # Przekaz wszystkie argumenty do skryptu Python

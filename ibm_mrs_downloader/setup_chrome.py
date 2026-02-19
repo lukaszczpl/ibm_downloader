@@ -2,6 +2,9 @@
 """
 Setup Chrome & ChromeDriver
 Automatycznie pobiera i konfiguruje Chrome oraz ChromeDriver dla IBM MRS Downloader.
+Pobiera OBE binarki na kazdej platformie:
+  - pelny Chrome       (domyslna binarka, lepszy rendering i anti-detekcja)
+  - chrome-headless-shell  (okrojona binarka, flaga --headless-shell)
 Wymaga tylko bibliotek standardowych Python.
 """
 
@@ -16,7 +19,7 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError
 
 # API endpoint dla stable releases
-CHROME_TESTING_API = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
+CHROME_JSON_URL = "https://raw.githubusercontent.com/GoogleChromeLabs/chrome-for-testing/refs/heads/main/data/last-known-good-versions-with-downloads.json"
 
 def detect_platform():
     """Wykrywa platformę i architekturę."""
@@ -110,10 +113,50 @@ def find_binary(search_dir, binary_name):
             return Path(root) / binary_name
     return None
 
+def _find_binary_dir(extract_dir, binary_name):
+    """Znajduje katalog zawierający binarkę w rozpakowanym archiwum."""
+    for item in extract_dir.iterdir():
+        if item.is_dir():
+            if (item / binary_name).exists():
+                return item
+    # Może binarka jest bezpośrednio w extract_dir
+    if (extract_dir / binary_name).exists():
+        return extract_dir
+    return None
+
+def _copy_contents(source_dir, dest_dir, skip_existing=False):
+    """Kopiuje zawartość katalogu source_dir do dest_dir.
+    
+    Args:
+        source_dir: Katalog źródłowy
+        dest_dir: Katalog docelowy
+        skip_existing: Jeśli True, nie nadpisuje istniejących plików
+    """
+    for item in source_dir.iterdir():
+        dest_path = dest_dir / item.name
+        if skip_existing and dest_path.exists():
+            continue
+        if item.is_dir():
+            if dest_path.exists():
+                shutil.rmtree(dest_path)
+            shutil.copytree(item, dest_path)
+        else:
+            shutil.copy2(item, dest_path)
+
+
+def _get_download_url(downloads_list, platform_name):
+    """Znajduje URL pobierania dla danej platformy."""
+    for download in downloads_list:
+        if download['platform'] == platform_name:
+            return download['url']
+    return None
+
+
 def setup_chrome_and_chromedriver():
     """Główna funkcja setupu."""
     print("=" * 60)
     print("Chrome & ChromeDriver Setup")
+    print("  Pobiera: pelny Chrome + chrome-headless-shell + ChromeDriver")
     print("=" * 60)
     
     # 1. Wykryj platformę
@@ -127,7 +170,6 @@ def setup_chrome_and_chromedriver():
     
     # 2. Pobierz informacje o wersji stable z GitHub (omija firewall)
     print(f"\n[INFO] Pobieranie informacji o wersji stable...")
-    CHROME_JSON_URL = "https://raw.githubusercontent.com/GoogleChromeLabs/chrome-for-testing/refs/heads/main/data/last-known-good-versions-with-downloads.json"
     
     try:
         request = Request(CHROME_JSON_URL, headers={'User-Agent': 'Mozilla/5.0'})
@@ -137,44 +179,40 @@ def setup_chrome_and_chromedriver():
         print(f"[ERROR] Nie można pobrać informacji o wersjach: {e}")
         return False
     
-    # 3. Znajdź URLe dla Chrome/chrome-headless-shell i ChromeDriver
+    # 3. Znajdź URLe dla Chrome, chrome-headless-shell i ChromeDriver
     try:
         channels = data['channels']
         stable = channels['Stable']
         version = stable['version']
         print(f"[INFO] Wersja stable: {version}")
         
-        # Logika platformowa: Windows = pełny Chrome, Linux = headless-shell
-        chrome_url = None
-        if system_name == "windows":
-            print(f"[INFO] System: Windows - pobieranie pełnej wersji Chrome")
-            chrome_downloads = stable['downloads'].get('chrome', [])
-            for download in chrome_downloads:
-                if download['platform'] == platform_name:
-                    chrome_url = download['url']
-                    break
-        else:  # Linux, Mac
-            print(f"[INFO] System: {system_name} - pobieranie chrome-headless-shell")
-            headless_downloads = stable['downloads'].get('chrome-headless-shell', [])
-            for download in headless_downloads:
-                if download['platform'] == platform_name:
-                    chrome_url = download['url']
-                    break
+        # URL dla pełnego Chrome
+        chrome_url = _get_download_url(
+            stable['downloads'].get('chrome', []), platform_name
+        )
+        # URL dla chrome-headless-shell
+        headless_url = _get_download_url(
+            stable['downloads'].get('chrome-headless-shell', []), platform_name
+        )
+        # URL dla ChromeDriver
+        chromedriver_url = _get_download_url(
+            stable['downloads'].get('chromedriver', []), platform_name
+        )
         
-        # Znajdź ChromeDriver
-        chromedriver_downloads = stable['downloads'].get('chromedriver', [])
-        chromedriver_url = None
-        for download in chromedriver_downloads:
-            if download['platform'] == platform_name:
-                chromedriver_url = download['url']
-                break
-        
-        if not chrome_url or not chromedriver_url:
-            print(f"[ERROR] Nie znaleziono pakietów dla platformy {platform_name}")
+        if not chrome_url:
+            print(f"[WARN] Nie znaleziono pelnego Chrome dla {platform_name}")
+        if not headless_url:
+            print(f"[WARN] Nie znaleziono chrome-headless-shell dla {platform_name}")
+        if not chrome_url and not headless_url:
+            print(f"[ERROR] Brak jakiejkolwiek binarki Chrome dla {platform_name}")
+            return False
+        if not chromedriver_url:
+            print(f"[ERROR] Nie znaleziono ChromeDriver dla {platform_name}")
             return False
             
-        print(f"[INFO] Chrome URL: {chrome_url}")
-        print(f"[INFO] ChromeDriver URL: {chromedriver_url}")
+        print(f"[INFO] Chrome URL:         {chrome_url or '(brak)'}")
+        print(f"[INFO] Headless-shell URL: {headless_url or '(brak)'}")
+        print(f"[INFO] ChromeDriver URL:   {chromedriver_url}")
         
     except KeyError as e:
         print(f"[ERROR] Błędna struktura JSON API: {e}")
@@ -192,129 +230,134 @@ def setup_chrome_and_chromedriver():
     temp_dir.mkdir(exist_ok=True)
     
     chrome_dir.mkdir(exist_ok=True)
+    chrome_full_dir = chrome_dir / "full"
+    chrome_headless_dir = chrome_dir / "headless"
+    chrome_full_dir.mkdir(exist_ok=True)
+    chrome_headless_dir.mkdir(exist_ok=True)
     chromedriver_dir.mkdir(exist_ok=True)
     
-    # 5. Pobierz i rozpakuj Chrome / chrome-headless-shell
-    print(f"\n[1/2] Chrome")
-    chrome_zip = temp_dir / "chrome.zip"
-    if not download_file(chrome_url, chrome_zip):
-        return False
-    
-    chrome_extract = temp_dir / "chrome_extracted"
-    # Na Linuxie ustaw uprawnienia wykonywania dla wszystkich plików
-    if not extract_zip(chrome_zip, chrome_extract, set_executable=(system_name == "linux")):
-        return False
-    
-    # Znajdź główny katalog z Chrome (zwykle jest zagnieżdżony w podkatalogu)
-    # Dla headless-shell szukamy 'chrome-headless-shell', dla pełnego Chrome szukamy 'chrome'
-    if system_name == "windows":
-        chrome_binary_name = "chrome.exe"
-    else:
-        # Na Linuxie będzie to chrome-headless-shell
-        chrome_binary_name = "chrome-headless-shell" if system_name == "linux" else "chrome"
-    
-    # Znajdź katalog zawierający chrome
-    chrome_source_dir = None
-    for item in chrome_extract.iterdir():
-        if item.is_dir():
-            # Sprawdź czy w tym katalogu jest chrome
-            if (item / chrome_binary_name).exists():
-                chrome_source_dir = item
-                break
-    
-    if not chrome_source_dir:
-        # Może chrome jest bezpośrednio w chrome_extract
-        if (chrome_extract / chrome_binary_name).exists():
-            chrome_source_dir = chrome_extract
-    
-    if chrome_source_dir:
-        print(f"[INFO] Kopiowanie Chrome z: {chrome_source_dir}")
-        # Skopiuj całą zawartość (biblioteki, zasoby, etc.)
-        for item in chrome_source_dir.iterdir():
-            dest_path = chrome_dir / item.name
-            if item.is_dir():
-                if dest_path.exists():
-                    shutil.rmtree(dest_path)
-                shutil.copytree(item, dest_path)
-            else:
-                shutil.copy2(item, dest_path)
-        
-        # Ustaw uprawnienia wykonywania dla pliku chrome (Linux/Mac)
-        chrome_binary_path = chrome_dir / chrome_binary_name
-        if chrome_binary_path.exists() and system_name != "windows":
-            os.chmod(chrome_binary_path, 0o755)
-        
-        print(f"[OK] Chrome zainstalowany: {chrome_dir}")
-    else:
-        print(f"[WARN] Nie znaleziono Chrome, kopiuję całą zawartość zip...")
-        # Fallback - skopiuj wszystko
-        for item in chrome_extract.iterdir():
-            if item.is_dir():
-                shutil.copytree(item, chrome_dir / item.name, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, chrome_dir / item.name)
+    is_linux = system_name == "linux"
+    step = 0
+    total_steps = (1 if chrome_url else 0) + (1 if headless_url else 0) + 1
 
+    # ---------------------------------------------------------------
+    # 5a. Pełny Chrome
+    # ---------------------------------------------------------------
+    if chrome_url:
+        step += 1
+        chrome_binary = "chrome.exe" if system_name == "windows" else "chrome"
+        print(f"\n[{step}/{total_steps}] Pelny Chrome ({chrome_binary})")
+        
+        chrome_zip = temp_dir / "chrome.zip"
+        if not download_file(chrome_url, chrome_zip):
+            return False
+        
+        chrome_extract = temp_dir / "chrome_extracted"
+        if not extract_zip(chrome_zip, chrome_extract, set_executable=is_linux):
+            return False
+        
+        source_dir = _find_binary_dir(chrome_extract, chrome_binary)
+        if source_dir:
+            print(f"[INFO] Kopiowanie Chrome z: {source_dir}")
+            _copy_contents(source_dir, chrome_full_dir)
+            
+            binary_path = chrome_full_dir / chrome_binary
+            if binary_path.exists() and system_name != "windows":
+                os.chmod(binary_path, 0o755)
+            
+            print(f"[OK] Chrome: {chrome_full_dir / chrome_binary}")
+        else:
+            print(f"[WARN] Nie znaleziono {chrome_binary} w archiwum, kopiuje calosc...")
+            _copy_contents(chrome_extract, chrome_full_dir)
+
+    # ---------------------------------------------------------------
+    # 5b. chrome-headless-shell
+    # ---------------------------------------------------------------
+    if headless_url:
+        step += 1
+        headless_binary = "chrome-headless-shell.exe" if system_name == "windows" else "chrome-headless-shell"
+        print(f"\n[{step}/{total_steps}] chrome-headless-shell ({headless_binary})")
+        
+        headless_zip = temp_dir / "headless_shell.zip"
+        if not download_file(headless_url, headless_zip):
+            return False
+        
+        headless_extract = temp_dir / "headless_extracted"
+        if not extract_zip(headless_zip, headless_extract, set_executable=is_linux):
+            return False
+        
+        source_dir = _find_binary_dir(headless_extract, headless_binary)
+        if source_dir:
+            print(f"[INFO] Kopiowanie headless-shell z: {source_dir}")
+            _copy_contents(source_dir, chrome_headless_dir)
+            
+            binary_path = chrome_headless_dir / headless_binary
+            if binary_path.exists() and system_name != "windows":
+                os.chmod(binary_path, 0o755)
+            
+            print(f"[OK] Headless-shell: {chrome_headless_dir / headless_binary}")
+        else:
+            print(f"[WARN] Nie znaleziono {headless_binary} w archiwum")
+
+    # ---------------------------------------------------------------
+    # 6. ChromeDriver
+    # ---------------------------------------------------------------
+    step += 1
+    chromedriver_binary = "chromedriver.exe" if system_name == "windows" else "chromedriver"
+    print(f"\n[{step}/{total_steps}] ChromeDriver ({chromedriver_binary})")
     
-    # 6. Pobierz i rozpakuj ChromeDriver
-    print(f"\n[2/2] ChromeDriver")
     chromedriver_zip = temp_dir / "chromedriver.zip"
     if not download_file(chromedriver_url, chromedriver_zip):
         return False
     
     chromedriver_extract = temp_dir / "chromedriver_extracted"
-    # Na Linuxie ustaw uprawnienia wykonywania dla wszystkich plików
-    if not extract_zip(chromedriver_zip, chromedriver_extract, set_executable=(system_name == "linux")):
+    if not extract_zip(chromedriver_zip, chromedriver_extract, set_executable=is_linux):
         return False
     
-    # Znajdź główny katalog z ChromeDriver
-    chromedriver_binary_name = "chromedriver.exe" if system_name == "windows" else "chromedriver"
-    
-    # Znajdź katalog zawierający chromedriver
-    chromedriver_source_dir = None
-    for item in chromedriver_extract.iterdir():
-        if item.is_dir():
-            # Sprawdź czy w tym katalogu jest chromedriver
-            if (item / chromedriver_binary_name).exists():
-                chromedriver_source_dir = item
-                break
-    
-    if not chromedriver_source_dir:
-        # Może chromedriver jest bezpośrednio w chromedriver_extract
-        if (chromedriver_extract / chromedriver_binary_name).exists():
-            chromedriver_source_dir = chromedriver_extract
-    
-    if chromedriver_source_dir:
-        print(f"[INFO] Kopiowanie ChromeDriver z: {chromedriver_source_dir}")
-        # Skopiuj całą zawartość
-        for item in chromedriver_source_dir.iterdir():
-            dest_path = chromedriver_dir / item.name
-            if item.is_dir():
-                if dest_path.exists():
-                    shutil.rmtree(dest_path)
-                shutil.copytree(item, dest_path)
-            else:
-                shutil.copy2(item, dest_path)
+    source_dir = _find_binary_dir(chromedriver_extract, chromedriver_binary)
+    if source_dir:
+        print(f"[INFO] Kopiowanie ChromeDriver z: {source_dir}")
+        _copy_contents(source_dir, chromedriver_dir)
         
-        # Ustaw uprawnienia wykonywania dla chromedriver (Linux/Mac)
-        chromedriver_binary_path = chromedriver_dir / chromedriver_binary_name
-        if chromedriver_binary_path.exists() and system_name != "windows":
-            os.chmod(chromedriver_binary_path, 0o755)
+        binary_path = chromedriver_dir / chromedriver_binary
+        if binary_path.exists() and system_name != "windows":
+            os.chmod(binary_path, 0o755)
         
-        print(f"[OK] ChromeDriver zainstalowany: {chromedriver_dir}")
+        print(f"[OK] ChromeDriver: {chromedriver_dir / chromedriver_binary}")
     else:
-        print(f"[ERROR] Nie znaleziono pliku {chromedriver_binary_name}")
+        print(f"[ERROR] Nie znaleziono {chromedriver_binary} w archiwum")
         return False
     
     # 7. Wyczyść tymczasowe pliki
     print(f"\n[INFO] Czyszczenie plików tymczasowych...")
     shutil.rmtree(temp_dir)
     
+    # 8. Podsumowanie
     print("\n" + "=" * 60)
     print("Setup zakończony pomyślnie!")
     print("=" * 60)
-    print(f"Chrome: {chrome_dir}")
-    print(f"ChromeDriver: {chromedriver_dir}")
-    print("\nMożesz teraz uruchomić ibm_mrs_downloader.py")
+    print(f"Katalog Chrome:       {chrome_dir}")
+    print(f"  chrome/full/      - pelny Chrome (domyslny)")
+    print(f"  chrome/headless/  - chrome-headless-shell (--headless-shell)")
+    
+    # Wylistuj zainstalowane binarki
+    if system_name == "windows":
+        bins = [("full", "chrome.exe"), ("headless", "chrome-headless-shell.exe")]
+    else:
+        bins = [("full", "chrome"), ("headless", "chrome-headless-shell")]
+    
+    for subdir, b in bins:
+        bp = chrome_dir / subdir / b
+        if bp.exists():
+            size_mb = bp.stat().st_size / (1024 * 1024)
+            print(f"  ✓ {subdir}/{b} ({size_mb:.1f} MB)")
+        else:
+            print(f"  ✗ {subdir}/{b} (brak)")
+    
+    print(f"Katalog ChromeDriver: {chromedriver_dir}")
+    print(f"\nDomyślna binarka: pelny Chrome (chrome/full/)")
+    print(f"Okrojona binarka: --headless-shell (chrome/headless/)")
+    print(f"\nMożesz teraz uruchomić ibm_mrs_downloader.py / ibm_mrs_downloader_playwright.py")
     
     return True
 

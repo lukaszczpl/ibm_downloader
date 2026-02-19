@@ -146,6 +146,7 @@ class IBMOpenSSHDownloader:
         download_timeout: int = 300,
         no_proxy_autodetect: bool = False,
         parallel_downloads: int = 3,
+        use_headless_shell: bool = False,
     ):
         self.download_dir = download_dir or str(Path.cwd() / "downloads")
         self.profile_dir = profile_dir or str(Path.cwd() / ".chrome_profile")
@@ -158,6 +159,7 @@ class IBMOpenSSHDownloader:
         self.page: Optional[Page] = None
         self._browser_pids: List[int] = []  # PIDy procesów Chromium do force-kill
         self._cleaned_up = False  # zabezpieczenie przed podwójnym cleanup
+        self.use_headless_shell = use_headless_shell
 
         # Proxy: jawny argument > zmienna środowiskowa > brak
         if proxy:
@@ -195,12 +197,24 @@ class IBMOpenSSHDownloader:
         self.playwright_instance = sync_playwright().start()
 
         # --- Opcjonalne: lokalne binarium Chrome ---
+        # Domyślnie: pełny chrome (lepszy rendering, pluginy, WebGL)
+        # --headless-shell: okrojona binarka (mniejsza, szybsza, ale wykrywalna)
+        # Binarki w osobnych katalogach (chrome/full/ i chrome/headless/) aby uniknąć konfliktów DLL
         script_dir = Path(__file__).parent
-        if os.name == 'nt':  # Windows
-            chrome_name = "chrome.exe"
-        else:  # Linux
-            chrome_name = "chrome-headless-shell"
-        local_chrome = script_dir / "chrome" / chrome_name
+        if self.use_headless_shell:
+            if os.name == 'nt':  # Windows
+                chrome_name = "chrome-headless-shell.exe"
+            else:  # Linux
+                chrome_name = "chrome-headless-shell"
+            local_chrome = script_dir / "chrome" / "headless" / chrome_name
+            log.info("Tryb: headless-shell (okrojona binarka)")
+        else:
+            if os.name == 'nt':  # Windows
+                chrome_name = "chrome.exe"
+            else:  # Linux
+                chrome_name = "chrome"
+            local_chrome = script_dir / "chrome" / "full" / chrome_name
+            log.info("Tryb: pelny Chrome (domyslny)")
 
         # --- Argumenty Chromium (stealth + stabilność + cisza w logach) ---
         chromium_args = [
@@ -1284,6 +1298,11 @@ Format pliku credentials.ini:
     parser.add_argument("--retry", help="Liczba prob retry (domyslnie: 5)", type=int, default=5)
     parser.add_argument("--download-timeout", help="Timeout pobierania w sekundach (domyslnie: 300)", type=int, default=300)
     parser.add_argument("--parallel", help="Liczba rownoczesnych pobieran (domyslnie: 3)", type=int, default=3)
+    parser.add_argument(
+        "--headless-shell",
+        action="store_true",
+        help="Uzyj okrojonej binarki chrome-headless-shell zamiast pelnego Chrome (mniejsza, ale gorzej omija detekcje botow)",
+    )
 
     args = parser.parse_args()
 
@@ -1303,6 +1322,7 @@ Format pliku credentials.ini:
         download_timeout=args.download_timeout,
         no_proxy_autodetect=args.no_proxy_autodetect,
         parallel_downloads=args.parallel,
+        use_headless_shell=args.headless_shell,
     )
 
     if args.auto_login:
