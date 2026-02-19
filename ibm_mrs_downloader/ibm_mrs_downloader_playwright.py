@@ -30,8 +30,11 @@ Uzycie:
     # password = twoje_haslo
 """
 
+import atexit
 import os
+import signal
 import socket
+import subprocess
 import sys
 import time
 import re
@@ -104,6 +107,29 @@ def _detect_system_proxy() -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Główna klasa (Playwright)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Globalna referencja do aktywnej instancji (do cleanup z signal/atexit)
+# ---------------------------------------------------------------------------
+_active_downloader: Optional["IBMOpenSSHDownloader"] = None
+
+
+def _emergency_cleanup(signum=None, frame=None):
+    """Awaryjne zamknięcie przeglądarki — wywoływane z signal/atexit."""
+    global _active_downloader
+    inst = _active_downloader
+    if inst is not None:
+        _active_downloader = None  # zapobiegaj ponownemu wywołaniu
+        log.info("Awaryjne zamykanie przegladarki (sygnał/atexit)...")
+        inst._cleanup()
+    # Jeśli wywołane przez sygnał, zakończ proces
+    if signum is not None:
+        sys.exit(128 + signum)
+
+
+# Rejestruj atexit raz (jako ostatnia deska ratunku)
+atexit.register(_emergency_cleanup)
+
+
 class IBMOpenSSHDownloader:
     """Klasa do pobierania pakietow OpenSSH ze strony IBM (Playwright, pipe mode)."""
 
@@ -129,6 +155,8 @@ class IBMOpenSSHDownloader:
         self.playwright_instance = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self._browser_pids: List[int] = []  # PIDy procesów Chromium do force-kill
+        self._cleaned_up = False  # zabezpieczenie przed podwójnym cleanup
 
         # Proxy: jawny argument > zmienna środowiskowa > brak
         if proxy:
@@ -142,6 +170,13 @@ class IBMOpenSSHDownloader:
             self.proxy = None
 
         self.corp_ca = corp_ca
+
+        # Zarejestruj tę instancję jako aktywną (do signal/atexit)
+        global _active_downloader
+        _active_downloader = self
+
+        # Rejestruj handlery sygnałów
+        self._register_signal_handlers()
 
     # -----------------------------------------------------------------------
     # Setup przeglądarki (Playwright, pipe mode – brak TCP!)
@@ -770,19 +805,119 @@ class IBMOpenSSHDownloader:
         finally:
             self._cleanup()
 
+    def _register_signal_handlers(self):
+        """Rejestruje handlery sygnałów dla czystego zamknięcia."""
+        for sig_name in ("SIGTERM", "SIGINT", "SIGBREAK"):
+            sig = getattr(signal, sig_name, None)
+            if sig is not None:
+                try:
+                    signal.signal(sig, _emergency_cleanup)
+                except (OSError, ValueError):
+                    # ValueError: signal only works in main thread
+                    pass
+
+    def _collect_browser_pids(self):
+        """Zbiera PIDy procesów Chromium powiązanych z tą instancją."""
+        try:
+            if os.name == "nt":
+                # Windows: wmic zwraca procesy chrome.exe z ich PID
+                result = subprocess.run(
+                    ["wmic", "process", "where",
+                     "name='chrome.exe' or name='chromium.exe'",
+                     "get", "ProcessId"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if line.isdigit():
+                        self._browser_pids.append(int(line))
+            else:
+                # Linux: pgrep
+                result = subprocess.run(
+                    ["pgrep", "-f", "chrom"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if line.isdigit():
+                        self._browser_pids.append(int(line))
+        except Exception:
+            pass
+
+    def _force_kill_browser(self):
+        """Wymusza zamknięcie procesów Chromium jeśli graceful close zawiódł."""
+        if not self._browser_pids:
+            return
+        log.info("Force-kill %d procesow Chromium...", len(self._browser_pids))
+        for pid in self._browser_pids:
+            try:
+                os.kill(pid, signal.SIGTERM if os.name != "nt" else signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        # Na Windows daj chwilę na SIGTERM, potem SIGKILL
+        if os.name == "nt":
+            time.sleep(1)
+            for pid in self._browser_pids:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        capture_output=True, timeout=5,
+                    )
+                except Exception:
+                    pass
+        self._browser_pids.clear()
+
     def _cleanup(self):
-        """Bezpieczne zamknięcie Playwright."""
+        """Bezpieczne zamknięcie Playwright z force-kill jako fallback."""
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+
+        # Zbierz PIDy PRZED zamknięciem (na wypadek gdyby graceful zawiódł)
+        self._collect_browser_pids()
+
+        graceful_ok = True
+
+        # 1. Zamknij wszystkie otwarte strony
         if self.context:
             log.info("Zamykanie przegladarki...")
             try:
-                self.context.close()
+                for p in self.context.pages[:]:
+                    try:
+                        p.close()
+                    except Exception:
+                        pass
             except Exception:
                 pass
+
+            # 2. Zamknij kontekst (persistent context = zamyka przeglądarkę)
+            try:
+                self.context.close()
+            except Exception:
+                graceful_ok = False
+            self.context = None
+
+        # 3. Zatrzymaj Playwright
         if self.playwright_instance:
             try:
                 self.playwright_instance.stop()
             except Exception:
-                pass
+                graceful_ok = False
+            self.playwright_instance = None
+
+        # 4. Force-kill jeśli graceful close zawiódł
+        if not graceful_ok:
+            log.warning("Graceful close nie powiodl sie – wymuszam kill procesow.")
+            self._force_kill_browser()
+        else:
+            self._browser_pids.clear()
+
+        # Wyrejestruj globalną referencję
+        global _active_downloader
+        if _active_downloader is self:
+            _active_downloader = None
+
+        log.info("Przegladarka zamknieta.")
 
     def _save_diagnostic_screenshot(self, name: str):
         """Zapisuje zrzut ekranu diagnostyczny."""
