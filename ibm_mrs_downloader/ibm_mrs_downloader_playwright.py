@@ -38,6 +38,7 @@ import re
 import argparse
 import configparser
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from typing import List, Optional, Set
@@ -118,10 +119,12 @@ class IBMOpenSSHDownloader:
         retries: int = 5,
         download_timeout: int = 300,
         no_proxy_autodetect: bool = False,
+        parallel_downloads: int = 3,
     ):
         self.download_dir = download_dir or str(Path.cwd() / "downloads")
         self.profile_dir = profile_dir or str(Path.cwd() / ".playwright_profile")
         self.download_timeout = download_timeout
+        self.parallel_downloads = max(1, parallel_downloads)
         os.makedirs(self.download_dir, exist_ok=True)
 
         self.playwright_instance = None
@@ -457,7 +460,7 @@ class IBMOpenSSHDownloader:
     # Pobieranie wszystkich plików
     # -----------------------------------------------------------------------
     def _download_all_tar_z(self, urls: List[str], version_filter: str = None) -> int:
-        """Pobiera wszystkie pliki .tar.Z z podanych URL-i."""
+        """Pobiera wszystkie pliki .tar.Z z podanych URL-i (rownolegle)."""
         if not urls:
             log.warning("Brak plikow do pobrania")
             return 0
@@ -467,12 +470,35 @@ class IBMOpenSSHDownloader:
             log.info("Filtrowanie po wersji '%s': %d plik(ow)", version_filter, len(filtered))
             urls = filtered
 
-        log.info("Rozpoczynam pobieranie %d plik(ow) (przez Playwright, proxy auth automatyczne)...", len(urls))
+        workers = min(self.parallel_downloads, len(urls))
+        log.info(
+            "Rozpoczynam pobieranie %d plik(ow) (%d rownolegly(ch) watek/watkow)...",
+            len(urls), workers,
+        )
 
+        if workers <= 1:
+            # Sekwencyjnie (brak overhead z ThreadPool)
+            downloaded = 0
+            for url in sorted(urls):
+                if self._download_file(url):
+                    downloaded += 1
+            return downloaded
+
+        # Rownolegle
         downloaded = 0
-        for url in sorted(urls):
-            if self._download_file(url):
-                downloaded += 1
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_url = {
+                executor.submit(self._download_file, url): url
+                for url in sorted(urls)
+            }
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    if future.result():
+                        downloaded += 1
+                except Exception as e:
+                    fname = urlparse(url).path.split("/")[-1]
+                    log.error("Blad pobierania %s: %s", fname, e)
 
         return downloaded
 
@@ -744,6 +770,7 @@ Format pliku credentials.ini:
     parser.add_argument("--no-proxy-autodetect", help="Wyłącz auto-wykrycie proxy z env", action="store_true")
     parser.add_argument("--retry", help="Liczba prob retry (domyslnie: 5)", type=int, default=5)
     parser.add_argument("--download-timeout", help="Timeout pobierania w sekundach (domyslnie: 300)", type=int, default=300)
+    parser.add_argument("--parallel", help="Liczba rownoczesnych pobieran (domyslnie: 3)", type=int, default=3)
 
     args = parser.parse_args()
 
@@ -762,6 +789,7 @@ Format pliku credentials.ini:
         retries=args.retry,
         download_timeout=args.download_timeout,
         no_proxy_autodetect=args.no_proxy_autodetect,
+        parallel_downloads=args.parallel,
     )
     downloader.run(
         version_filter=args.version,
