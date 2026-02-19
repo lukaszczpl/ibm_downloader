@@ -38,12 +38,9 @@ import re
 import argparse
 import configparser
 import logging
-import requests
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from typing import List, Optional, Set
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
 
 try:
     from playwright.sync_api import sync_playwright, BrowserContext, Page
@@ -89,19 +86,6 @@ _USER_AGENT = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 
-# Pełny zestaw nagłówków imitujący prawdziwą przeglądarkę
-_BROWSER_HEADERS = {
-    "User-Agent": _USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,pl;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -115,57 +99,6 @@ def _detect_system_proxy() -> Optional[str]:
             return val
     return None
 
-
-# ---------------------------------------------------------------------------
-# Pomocnicze: budowanie sesji requests z retry i proxy
-# ---------------------------------------------------------------------------
-def _build_session(
-    proxy: Optional[str] = None,
-    corp_ca: Optional[str] = None,
-    retries: int = 5,
-    backoff_factor: float = 2.0,
-) -> requests.Session:
-    """Tworzy sesję requests z retry, proxy i obsługą firmowego CA."""
-    session = requests.Session()
-
-    # Retry z exponential backoff
-    retry_strategy = Retry(
-        total=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "HEAD"],
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-
-    # Proxy
-    if proxy:
-        session.proxies = {"http": proxy, "https": proxy}
-        log.info("Ustawiono proxy dla requests: %s", proxy)
-
-    # Firmowe CA (SSL inspection)
-    if corp_ca:
-        if Path(corp_ca).exists():
-            session.verify = corp_ca
-            log.info("Zaladowano firmowe CA: %s", corp_ca)
-        else:
-            log.warning("Plik CA nie istnieje: %s – pomijam", corp_ca)
-    else:
-        # Próba użycia systemowego bundle CA (Linux)
-        system_ca_paths = [
-            "/etc/ssl/certs/ca-certificates.crt",   # Debian/Ubuntu
-            "/etc/pki/tls/certs/ca-bundle.crt",     # RHEL/CentOS
-            "/etc/ssl/ca-bundle.pem",                # openSUSE
-        ]
-        for ca_path in system_ca_paths:
-            if Path(ca_path).exists():
-                session.verify = ca_path
-                log.info("Uzywam systemowego CA bundle: %s", ca_path)
-                break
-
-    return session
 
 
 # ---------------------------------------------------------------------------
@@ -207,11 +140,6 @@ class IBMOpenSSHDownloader:
             self.proxy = None
 
         self.corp_ca = corp_ca
-        self.session = _build_session(
-            proxy=self.proxy,
-            corp_ca=corp_ca,
-            retries=retries,
-        )
 
     # -----------------------------------------------------------------------
     # Setup przeglądarki (Playwright, pipe mode – brak TCP!)
@@ -354,13 +282,6 @@ class IBMOpenSSHDownloader:
         except Exception as e:
             log.warning("Nie udalo sie wstrzyknac stealth JS: %s", e)
 
-    # -----------------------------------------------------------------------
-    # Cookies
-    # -----------------------------------------------------------------------
-    def _transfer_cookies_to_requests(self):
-        """Przenosi ciasteczka z Playwright do sesji requests."""
-        for cookie in self.context.cookies():
-            self.session.cookies.set(cookie["name"], cookie["value"])
 
     # -----------------------------------------------------------------------
     # Parsowanie linków
@@ -465,7 +386,7 @@ class IBMOpenSSHDownloader:
     # Pobieranie pliku
     # -----------------------------------------------------------------------
     def _download_file(self, url: str, filename: str = None) -> bool:
-        """Pobiera plik z podanego URL uzywajac requests z retry."""
+        """Pobiera plik przez Playwright (context.request) – dziedziczy proxy i cookies z Chrome."""
         if not filename:
             filename = urlparse(url).path.split("/")[-1]
 
@@ -475,68 +396,56 @@ class IBMOpenSSHDownloader:
             log.info("SKIP: %s – juz istnieje", filename)
             return True
 
-        # Nagłówki imitujące przeglądarkę (anty-DLP)
-        headers = dict(_BROWSER_HEADERS)
-        try:
-            headers["Referer"] = self.page.url
-        except Exception:
-            headers["Referer"] = self.IBM_URL
-
         tmp_filepath = filepath.with_suffix(filepath.suffix + ".part")
 
-        for attempt in range(1, 4):  # max 3 próby na poziomie pobierania
+        for attempt in range(1, 4):  # max 3 próby
             try:
                 log.info("Pobieranie [%d/3]: %s", attempt, filename)
-                response = self.session.get(
+
+                # Playwright context.request – używa proxy + cookies przeglądarki
+                # (w tym NTLM/Kerberos auth do corporate proxy)
+                response = self.context.request.get(
                     url,
-                    headers=headers,
-                    stream=True,
-                    timeout=(30, self.download_timeout),
+                    timeout=self.download_timeout * 1000,
                 )
-                response.raise_for_status()
+
+                if not response.ok:
+                    log.warning(
+                        "[%d/3] HTTP %d dla: %s", attempt, response.status, filename
+                    )
+                    response.dispose()
+                    if attempt < 3:
+                        time.sleep(5 * attempt)
+                    continue
 
                 # Walidacja Content-Type (ochrona przed stronami blokady proxy)
-                content_type = response.headers.get("Content-Type", "")
+                content_type = response.headers.get("content-type", "")
                 if "text/html" in content_type.lower():
                     log.warning(
                         "[%d/3] Serwer zwrocil HTML zamiast pliku binarnego "
                         "(prawdopodobnie strona blokady proxy/firewall): %s",
                         attempt, filename,
                     )
+                    response.dispose()
                     if attempt < 3:
                         time.sleep(5 * attempt)
                     continue
 
-                downloaded = 0
+                # Pobierz ciało odpowiedzi i zapisz
+                body = response.body()
+                response.dispose()
+
                 with open(tmp_filepath, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=65536):  # 64KB chunks
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
+                    f.write(body)
 
                 # Sukces – rename .part -> finalny plik
                 tmp_filepath.rename(filepath)
-                size_mb = downloaded / (1024 * 1024)
+                size_mb = len(body) / (1024 * 1024)
                 log.info("OK: %s (%.2f MB)", filename, size_mb)
                 return True
 
-            except requests.exceptions.SSLError as e:
-                log.error("Blad SSL przy pobieraniu %s: %s", filename, e)
-                log.error("Wskazowka: uzyj --corp-ca <plik.pem> lub sprawdz konfiguracje proxy")
-                break  # SSL error – nie ponawiaj
-
-            except requests.exceptions.ProxyError as e:
-                log.error("[%d/3] Blad proxy: %s", attempt, e)
-                if attempt < 3:
-                    time.sleep(5 * attempt)
-
-            except requests.exceptions.ConnectionError as e:
-                log.error("[%d/3] Blad polaczenia: %s", attempt, e)
-                if attempt < 3:
-                    time.sleep(5 * attempt)
-
             except Exception as e:
-                log.error("[%d/3] Blad pobierania %s: %s", attempt, filename, e)
+                log.error("[%d/3] Blad pobierania %s: %s", attempt, filename, str(e).splitlines()[0])
                 if attempt < 3:
                     time.sleep(3 * attempt)
 
@@ -559,8 +468,7 @@ class IBMOpenSSHDownloader:
             log.info("Filtrowanie po wersji '%s': %d plik(ow)", version_filter, len(filtered))
             urls = filtered
 
-        log.info("Rozpoczynam pobieranie %d plik(ow)...", len(urls))
-        self._transfer_cookies_to_requests()
+        log.info("Rozpoczynam pobieranie %d plik(ow) (przez Playwright, proxy auth automatyczne)...", len(urls))
 
         downloaded = 0
         for url in sorted(urls):
