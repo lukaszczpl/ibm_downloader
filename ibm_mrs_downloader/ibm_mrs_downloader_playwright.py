@@ -642,10 +642,12 @@ class IBMOpenSSHDownloader:
 
             log.info("Kliknieto przycisk Google")
             self.page.wait_for_timeout(2000)
+            self._save_diagnostic_screenshot("google_redirect")
 
             # Email
             log.info("Wprowadzanie emaila...")
             self.page.wait_for_selector("input[type='email']", state="visible", timeout=30000)
+            self._save_diagnostic_screenshot("google_email_page")
             self.page.fill("input[type='email']", email)
             self.page.press("input[type='email']", "Enter")
             self.page.wait_for_timeout(2000)
@@ -653,10 +655,13 @@ class IBMOpenSSHDownloader:
             # Hasło
             log.info("Wprowadzanie hasla...")
             self.page.wait_for_selector("input[type='password']", state="visible", timeout=30000)
+            self._save_diagnostic_screenshot("google_password_page")
             self.page.wait_for_timeout(1000)
             self.page.fill("input[type='password']", password)
             self.page.press("input[type='password']", "Enter")
             log.info("Zatwierdzono haslo")
+            self.page.wait_for_timeout(2000)
+            self._save_diagnostic_screenshot("google_after_password")
 
         except Exception as e:
             log.warning("Blad podczas auto-logowania Google: %s", str(e).splitlines()[0])
@@ -672,6 +677,7 @@ class IBMOpenSSHDownloader:
             # Email (IBMid)
             log.info("Wprowadzanie IBMid (email)...")
             self.page.wait_for_selector("#username", state="visible", timeout=30000)
+            self._save_diagnostic_screenshot("ibm_email_page")
             self.page.fill("#username", email)
             self.page.wait_for_timeout(500)
 
@@ -686,10 +692,12 @@ class IBMOpenSSHDownloader:
                 self.page.press("#username", "Enter")
 
             self.page.wait_for_timeout(2000)
+            self._save_diagnostic_screenshot("ibm_after_email")
 
             # Hasło
             log.info("Wprowadzanie hasla...")
             self.page.wait_for_selector("#password", state="visible", timeout=30000)
+            self._save_diagnostic_screenshot("ibm_password_page")
             self.page.fill("#password", password)
             self.page.wait_for_timeout(500)
             self.page.press("#password", "Enter")
@@ -713,6 +721,7 @@ class IBMOpenSSHDownloader:
 
             # Sprawdź czy IBM prosi o kod weryfikacyjny (2FA)
             self.page.wait_for_timeout(3000)
+            self._save_diagnostic_screenshot("ibm_after_password")
             self._handle_ibm_verification_code()
 
         except Exception as e:
@@ -755,6 +764,8 @@ class IBMOpenSSHDownloader:
         log.info("IBM wyslal kod weryfikacyjny (np. email).")
         log.info("Format kodu: Vxxxx-NNNNNN (potrzebna jest czesc po myslniku)")
         log.info("")
+
+        self._save_diagnostic_screenshot("verification_page")
 
         # Znajdź pole do wpisania kodu
         code_input = None
@@ -834,6 +845,9 @@ class IBMOpenSSHDownloader:
             self.page.press(code_input, "Enter")
             log.info("Zatwierdzono kod weryfikacyjny (ENTER)")
 
+            self.page.wait_for_timeout(2000)
+            self._save_diagnostic_screenshot("verification_submitted")
+
         except Exception as e:
             log.error("Blad podczas wpisywania kodu: %s", str(e).splitlines()[0])
             self._save_diagnostic_screenshot("verification_error")
@@ -906,10 +920,13 @@ class IBMOpenSSHDownloader:
 
         try:
             self._setup_browser(headless=True)
+            self._screenshot_counter = 0  # Reset licznika screenshotów
             self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+            self._save_diagnostic_screenshot("page_loaded")
 
             # Sprawdź czy sesja z profilu jest aktywna
             session_active = self._check_session_active(timeout=30)
+            self._save_diagnostic_screenshot("session_check")
 
             if not session_active:
                 if not credentials_file:
@@ -950,6 +967,7 @@ class IBMOpenSSHDownloader:
                     return
 
             # Pobieranie
+            self._save_diagnostic_screenshot("packages_page")
             log.info("-" * 60)
             log.info("AUTOMATYCZNE POBIERANIE")
             log.info("-" * 60)
@@ -1097,15 +1115,20 @@ class IBMOpenSSHDownloader:
 
         log.info("Przegladarka zamknieta.")
 
-    def _save_diagnostic_screenshot(self, name: str):
-        """Zapisuje zrzut ekranu diagnostyczny."""
+    def _save_diagnostic_screenshot(self, name: str, full_page: bool = True):
+        """Zapisuje zrzut ekranu diagnostyczny (numerowany sekwencyjnie)."""
         try:
+            if not hasattr(self, '_screenshot_counter'):
+                self._screenshot_counter = 0
+            self._screenshot_counter += 1
+
             script_dir = Path(__file__).parent
             screenshot_dir = script_dir / ".screenshot"
             screenshot_dir.mkdir(exist_ok=True)
-            path = screenshot_dir / f"{name}.png"
-            self.page.screenshot(path=str(path))
-            log.info("Zrzut ekranu diagnostyczny: %s", path)
+            filename = f"{self._screenshot_counter:02d}_{name}.png"
+            path = screenshot_dir / filename
+            self.page.screenshot(path=str(path), full_page=full_page)
+            log.info("Screenshot [%02d]: %s", self._screenshot_counter, filename)
         except Exception as e:
             log.warning("Nie udalo sie zapisac zrzutu ekranu: %s", e)
 
