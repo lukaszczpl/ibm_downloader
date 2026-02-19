@@ -414,7 +414,13 @@ class IBMOpenSSHDownloader:
                 with download_page.expect_download(
                     timeout=self.download_timeout * 1000
                 ) as download_info:
-                    download_page.goto(url, wait_until="commit", timeout=60000)
+                    # goto() rzuca "Download is starting" gdy Chrome zaczyna
+                    # pobieranie zamiast ładowania strony – to oczekiwane zachowanie
+                    try:
+                        download_page.goto(url, wait_until="commit", timeout=60000)
+                    except Exception as nav_err:
+                        if "Download is starting" not in str(nav_err):
+                            raise  # prawdziwy błąd nawigacji
 
                 download = download_info.value
 
