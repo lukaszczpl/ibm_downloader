@@ -181,7 +181,7 @@ class IBMOpenSSHDownloader:
     # -----------------------------------------------------------------------
     # Setup przeglądarki (Playwright, pipe mode – brak TCP!)
     # -----------------------------------------------------------------------
-    def _setup_browser(self):
+    def _setup_browser(self, headless: bool = True):
         """Konfiguruje Playwright Chromium z persistent context (pipe mode)."""
         if not PLAYWRIGHT_AVAILABLE:
             raise RuntimeError(
@@ -228,7 +228,7 @@ class IBMOpenSSHDownloader:
         # --- Konfiguracja launch ---
         launch_kwargs = {
             "user_data_dir": os.path.abspath(self.profile_dir),
-            "headless": True,
+            "headless": headless,
             "args": chromium_args,
             "viewport": {"width": 1920, "height": 1080},
             "user_agent": _USER_AGENT,
@@ -276,7 +276,8 @@ class IBMOpenSSHDownloader:
         # --- Stealth: ukrycie śladów automatyzacji ---
         self._inject_stealth_js()
 
-        log.info("Przegladarka uruchomiona (Playwright, pipe mode, headless)")
+        mode_str = "headless" if headless else "interaktywny"
+        log.info("Przegladarka uruchomiona (Playwright, pipe mode, %s)", mode_str)
         log.info("Profil: %s", self.profile_dir)
         log.info("Komunikacja: PIPE (brak otwartych portow TCP)")
 
@@ -714,20 +715,59 @@ class IBMOpenSSHDownloader:
         return False
 
     # -----------------------------------------------------------------------
-    # Główna metoda
+    # Tryb interaktywny (tworzenie profilu)
+    # -----------------------------------------------------------------------
+    def run_interactive(self):
+        """Otwiera przegladarke w trybie interaktywnym do recznego logowania."""
+        log.info("=" * 60)
+        log.info("IBM MRS Downloader (Playwright) – TRYB INTERAKTYWNY")
+        log.info("=" * 60)
+        log.info("Przegladarka otworzy strone IBM MRS.")
+        log.info("Zaloguj sie recznie, a sesja zostanie zapisana w profilu.")
+        log.info("Profil: %s", self.profile_dir)
+        log.info("=" * 60)
+
+        try:
+            self._setup_browser(headless=False)
+            self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+
+            log.info("")
+            log.info("Przegladarka jest otwarta. Zaloguj sie na stronie IBM.")
+            log.info("Po zalogowaniu wcisnij ENTER w tym oknie, aby zamknac przegladarke.")
+            log.info("Sesja zostanie zapisana w profilu i mozna ja uzyc w trybie batch.")
+            log.info("")
+
+            try:
+                input(">>> Wcisnij ENTER aby zamknac przegladarke i zapisac profil... ")
+            except (EOFError, KeyboardInterrupt):
+                log.info("Zamykanie...")
+
+            log.info("=" * 60)
+            log.info("Profil zapisany w: %s", self.profile_dir)
+            log.info("Uzyj --auto-login aby uruchomic w trybie batch.")
+            log.info("=" * 60)
+
+        except Exception as e:
+            log.error("Blad: %s", e)
+            raise
+        finally:
+            self._cleanup()
+
+    # -----------------------------------------------------------------------
+    # Główna metoda (batch)
     # -----------------------------------------------------------------------
     def run(
         self,
         version_filter: str = None,
         credentials_file: str = None,
     ):
-        """Glowna metoda – zawsze headless (batch mode)."""
+        """Glowna metoda – headless (batch mode)."""
         log.info("=" * 60)
         log.info("IBM MRS Downloader (Playwright – pipe mode)")
         log.info("=" * 60)
 
         try:
-            self._setup_browser()
+            self._setup_browser(headless=True)
             self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
 
             # Sprawdź czy sesja z profilu jest aktywna
@@ -940,8 +980,11 @@ def main():
         description="Pobiera pakiety OpenSSH (.tar.Z) ze strony IBM MRS (Playwright, pipe mode)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Przyklady uzycia:
-  # Tryb batch z plikiem credentials
+Tryby pracy:
+  # Tryb INTERAKTYWNY (bez argumentow) – otwiera przegladarke do recznego logowania
+  python ibm_mrs_downloader_playwright.py
+
+  # Tryb BATCH (headless, z plikiem credentials)
   python ibm_mrs_downloader_playwright.py --auto-login credentials.ini
 
   # Z proxy korporacyjnym
@@ -966,7 +1009,7 @@ Format pliku credentials.ini:
         "--auto-login",
         nargs="?",
         const="credentials.ini",
-        help="Plik credentials (domyslnie: credentials.ini)",
+        help="Plik credentials (domyslnie: credentials.ini) – wlacza tryb batch",
         default=None,
     )
     parser.add_argument("--profile-dir", help="Sciezka do profilu przegladarki", default=None)
@@ -996,10 +1039,17 @@ Format pliku credentials.ini:
         no_proxy_autodetect=args.no_proxy_autodetect,
         parallel_downloads=args.parallel,
     )
-    downloader.run(
-        version_filter=args.version,
-        credentials_file=args.auto_login,
-    )
+
+    if args.auto_login:
+        # Tryb batch (headless)
+        downloader.run(
+            version_filter=args.version,
+            credentials_file=args.auto_login,
+        )
+    else:
+        # Tryb interaktywny (widoczna przegladarka)
+        downloader.run_interactive()
+
     sys.exit(0)
 
 

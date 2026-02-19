@@ -213,8 +213,8 @@ class IBMOpenSSHDownloader:
     # -----------------------------------------------------------------------
     # Setup Chrome
     # -----------------------------------------------------------------------
-    def _setup_driver(self):
-        """Konfiguruje przegladarke Chrome w trybie stealth headless."""
+    def _setup_driver(self, headless: bool = True):
+        """Konfiguruje przegladarke Chrome (headless lub interaktywnie)."""
         if not SELENIUM_AVAILABLE:
             raise RuntimeError(
                 "Selenium nie jest zainstalowane. Uruchom: pip install selenium"
@@ -225,8 +225,9 @@ class IBMOpenSSHDownloader:
         # --- Stały profil (zachowuje cookies/sesję między uruchomieniami) ---
         chrome_options.add_argument(f"user-data-dir={os.path.abspath(self.profile_dir)}")
 
-        # --- Headless (nowy tryb, mniej wykrywalny niż stary --headless) ---
-        chrome_options.add_argument("--headless=new")
+        # --- Headless tylko w trybie batch ---
+        if headless:
+            chrome_options.add_argument("--headless=new")
 
         # --- Flagi wymagane w środowisku serwerowym ---
         chrome_options.add_argument("--no-sandbox")
@@ -327,7 +328,8 @@ class IBMOpenSSHDownloader:
         # --- JS: ukrycie webdriver fingerprint ---
         self._inject_stealth_js()
 
-        log.info("Przegladarka uruchomiona (headless stealth)")
+        mode_str = "headless stealth" if headless else "interaktywny"
+        log.info("Przegladarka uruchomiona (%s)", mode_str)
         log.info("Profil: %s", self.profile_dir)
 
     def _inject_stealth_js(self):
@@ -695,20 +697,64 @@ class IBMOpenSSHDownloader:
         return False
 
     # -----------------------------------------------------------------------
-    # Główna metoda
+    # Tryb interaktywny (tworzenie profilu)
+    # -----------------------------------------------------------------------
+    def run_interactive(self):
+        """Otwiera przegladarke w trybie interaktywnym do recznego logowania."""
+        log.info("=" * 60)
+        log.info("IBM MRS Downloader – TRYB INTERAKTYWNY")
+        log.info("=" * 60)
+        log.info("Przegladarka otworzy strone IBM MRS.")
+        log.info("Zaloguj sie recznie, a sesja zostanie zapisana w profilu.")
+        log.info("Profil: %s", self.profile_dir)
+        log.info("=" * 60)
+
+        try:
+            self._setup_driver(headless=False)
+            self.driver.get(self.IBM_URL)
+
+            log.info("")
+            log.info("Przegladarka jest otwarta. Zaloguj sie na stronie IBM.")
+            log.info("Po zalogowaniu wcisnij ENTER w tym oknie, aby zamknac przegladarke.")
+            log.info("Sesja zostanie zapisana w profilu i mozna ja uzyc w trybie batch.")
+            log.info("")
+
+            try:
+                input(">>> Wcisnij ENTER aby zamknac przegladarke i zapisac profil... ")
+            except (EOFError, KeyboardInterrupt):
+                log.info("Zamykanie...")
+
+            log.info("=" * 60)
+            log.info("Profil zapisany w: %s", self.profile_dir)
+            log.info("Uzyj --auto-login aby uruchomic w trybie batch.")
+            log.info("=" * 60)
+
+        except Exception as e:
+            log.error("Blad: %s", e)
+            raise
+        finally:
+            if self.driver:
+                log.info("Zamykanie przegladarki...")
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
+
+    # -----------------------------------------------------------------------
+    # Główna metoda (batch)
     # -----------------------------------------------------------------------
     def run(
         self,
         version_filter: str = None,
         credentials_file: str = None,
     ):
-        """Glowna metoda – zawsze headless (batch mode)."""
+        """Glowna metoda – headless (batch mode)."""
         log.info("=" * 60)
         log.info("IBM MRS Downloader")
         log.info("=" * 60)
 
         try:
-            self._setup_driver()
+            self._setup_driver(headless=True)
             self.driver.get(self.IBM_URL)
 
             # Sprawdź czy sesja z profilu jest aktywna
@@ -809,11 +855,14 @@ class IBMOpenSSHDownloader:
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Pobiera pakiety OpenSSH (.tar.Z) ze strony IBM MRS (tryb batch/headless)",
+        description="Pobiera pakiety OpenSSH (.tar.Z) ze strony IBM MRS",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Przyklady uzycia:
-  # Tryb batch z plikiem credentials
+Tryby pracy:
+  # Tryb INTERAKTYWNY (bez argumentow) – otwiera przegladarke do recznego logowania
+  python ibm_mrs_downloader.py
+
+  # Tryb BATCH (headless, z plikiem credentials)
   python ibm_mrs_downloader.py --auto-login credentials.ini
 
   # Z proxy korporacyjnym
@@ -838,7 +887,7 @@ Format pliku credentials.ini:
         "--auto-login",
         nargs="?",
         const="credentials.ini",
-        help="Plik credentials (domyslnie: credentials.ini)",
+        help="Plik credentials (domyslnie: credentials.ini) – wlacza tryb batch",
         default=None,
     )
     parser.add_argument("--profile-dir", help="Sciezka do profilu Chrome", default=None)
@@ -864,10 +913,17 @@ Format pliku credentials.ini:
         download_timeout=args.download_timeout,
         no_proxy_autodetect=args.no_proxy_autodetect,
     )
-    downloader.run(
-        version_filter=args.version,
-        credentials_file=args.auto_login,
-    )
+
+    if args.auto_login:
+        # Tryb batch (headless)
+        downloader.run(
+            version_filter=args.version,
+            credentials_file=args.auto_login,
+        )
+    else:
+        # Tryb interaktywny (widoczna przegladarka)
+        downloader.run_interactive()
+
     sys.exit(0)
 
 
