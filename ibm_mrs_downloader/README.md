@@ -30,6 +30,36 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## 🌐 Konfiguracja pip (Sieć Korporacyjna / Proxy)
+
+Skrypty uruchomieniowe (`run_playwright_linux.sh`, `run_playwright_windows.bat`) automatycznie tworzą plik konfiguracji pip wewnątrz katalogu `venv`:
+
+| System | Plik | 
+|--------|------|
+| Linux | `venv/pip.conf` |
+| Windows | `venv\pip.ini` |
+
+**Jeśli jesteś w sieci korporacyjnej**, edytuj ten plik i odkomentuj/uzupełnij odpowiednie opcje:
+
+```ini
+[global]
+# Proxy korporacyjne
+proxy = http://user:password@proxy.corp.example.com:8080
+
+# Wewnętrzne repozytorium PyPI (Nexus, Artifactory itp.)
+index-url = https://nexus.corp.example.com/repository/pypi-proxy/simple/
+
+# Dodatkowy (publiczny) index jako fallback
+extra-index-url = https://pypi.org/simple/
+
+# Zaufane hosty (wymagane przy SSL inspection / self-signed CA)
+trusted-host = nexus.corp.example.com
+               pypi.org
+               files.pythonhosted.org
+```
+
+> **Uwaga:** Plik jest tworzony **tylko raz** przy pierwszym utworzeniu `venv`. Jeśli `venv` już istnieje, możesz utworzyć/edytować plik ręcznie.
+
 ## 🔧 Konfiguracja Offline (Firewall Korporacyjny)
 
 Jeśli firewall blokuje automatyczne pobieranie Chrome/ChromeDriver, masz dwie opcje:

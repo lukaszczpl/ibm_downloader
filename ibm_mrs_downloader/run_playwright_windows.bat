@@ -22,6 +22,20 @@ if not exist "venv" (
         pause
         exit /b 1
     )
+
+    REM Utworz plik konfiguracji pip (proxy / index-url dla sieci korporacyjnej)
+    echo [INFO] Tworzenie pliku konfiguracji pip: venv\pip.ini
+    (
+        echo [global]
+        echo # Odkomentuj i uzupelnij ponizsze opcje w przypadku sieci korporacyjnej:
+        echo # proxy = http://user:password@proxy.corp.example.com:8080
+        echo # index-url = https://nexus.corp.example.com/repository/pypi-proxy/simple/
+        echo # extra-index-url = https://pypi.org/simple/
+        echo # trusted-host = nexus.corp.example.com
+        echo #                pypi.org
+        echo #                files.pythonhosted.org
+    ) > venv\pip.ini
+    echo [INFO] Plik pip.ini utworzony. Edytuj go jesli jestes za proxy korporacyjnym.
 ) else (
     echo [INFO] Srodowisko 'venv' juz istnieje.
 )

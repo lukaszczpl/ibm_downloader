@@ -147,7 +147,7 @@ class IBMOpenSSHDownloader:
         parallel_downloads: int = 3,
     ):
         self.download_dir = download_dir or str(Path.cwd() / "downloads")
-        self.profile_dir = profile_dir or str(Path.cwd() / ".playwright_profile")
+        self.profile_dir = profile_dir or str(Path.cwd() / ".chrome_profile")
         self.download_timeout = download_timeout
         self.parallel_downloads = max(1, parallel_downloads)
         os.makedirs(self.download_dir, exist_ok=True)

@@ -24,6 +24,21 @@ fi
 if [ ! -d "$VENV_DIR" ]; then
     echo "[INFO] Tworzenie wirtualnego srodowiska '$VENV_DIR'..."
     python3 -m venv "$VENV_DIR"
+
+    # Utworz plik konfiguracji pip (proxy / index-url dla sieci korporacyjnej)
+    PIP_CONF="$VENV_DIR/pip.conf"
+    echo "[INFO] Tworzenie pliku konfiguracji pip: $PIP_CONF"
+    cat > "$PIP_CONF" <<'EOF'
+[global]
+# Odkomentuj i uzupelnij ponizsze opcje w przypadku sieci korporacyjnej:
+# proxy = http://user:password@proxy.corp.example.com:8080
+# index-url = https://nexus.corp.example.com/repository/pypi-proxy/simple/
+# extra-index-url = https://pypi.org/simple/
+# trusted-host = nexus.corp.example.com
+#                pypi.org
+#                files.pythonhosted.org
+EOF
+    echo "[INFO] Plik pip.conf utworzony. Edytuj go jesli jestes za proxy korporacyjnym."
 fi
 
 # Aktywacja venv
