@@ -234,6 +234,9 @@ class IBMOpenSSHDownloader:
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--window-size=1920,1080")
         chrome_options.add_argument("--dns-result-order=ipv4first")
+        # Przenośność profilu między platformami (Windows ↔ Linux):
+        chrome_options.add_argument("--password-store=basic")
+        chrome_options.add_argument("--disable-features=LockProfileCookieDatabase")
 
         # --- Stealth: ukrycie automatyzacji przed stroną ---
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")

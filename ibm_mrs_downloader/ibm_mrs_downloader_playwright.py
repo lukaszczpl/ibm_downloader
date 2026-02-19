@@ -243,6 +243,12 @@ class IBMOpenSSHDownloader:
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--dns-result-order=ipv4first",
+            # Przenośność profilu między platformami (Windows ↔ Linux):
+            # Cookies w plaintext SQLite zamiast szyfrowania DPAPI/keyring
+            "--password-store=basic",
+            "--disable-features=LockProfileCookieDatabase,PasswordManagerOnboarding",
+            "--safebrowsing-disable-download-protection",
+            "--no-default-browser-check",
             # Wyciszenie logów Chromium (zapobiega wyciekowi console.log ze stron do stdout)
             "--disable-logging",
             "--log-level=3",           # FATAL only
