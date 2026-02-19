@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 IBM MRS Downloader (Playwright version)
 Pobiera pakiety OpenSSH (i inne) ze strony IBM z autoryzacja przez konto Google lub IBMid.
