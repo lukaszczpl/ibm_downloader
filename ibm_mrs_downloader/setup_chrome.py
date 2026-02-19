@@ -18,8 +18,11 @@ from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
-# API endpoint dla stable releases
-CHROME_JSON_URL = "https://raw.githubusercontent.com/GoogleChromeLabs/chrome-for-testing/refs/heads/main/data/last-known-good-versions-with-downloads.json"
+# API endpoints dla stable releases (z fallbackiem)
+CHROME_JSON_URLS = [
+    "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json",
+    "https://raw.githubusercontent.com/GoogleChromeLabs/chrome-for-testing/refs/heads/main/data/last-known-good-versions-with-downloads.json",
+]
 
 def detect_platform():
     """Wykrywa platformę i architekturę."""
@@ -168,15 +171,40 @@ def setup_chrome_and_chromedriver():
         return False
     
     
-    # 2. Pobierz informacje o wersji stable z GitHub (omija firewall)
+    # 2. Pobierz informacje o wersji stable (z fallbackiem na alternatywny URL)
     print(f"\n[INFO] Pobieranie informacji o wersji stable...")
     
-    try:
-        request = Request(CHROME_JSON_URL, headers={'User-Agent': 'Mozilla/5.0'})
-        with urlopen(request, timeout=30) as response:
-            data = json.loads(response.read().decode())
-    except Exception as e:
-        print(f"[ERROR] Nie można pobrać informacji o wersjach: {e}")
+    # Wykryj proxy z env lub argumentu wiersza poleceń
+    proxy = None
+    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        if os.environ.get(var):
+            proxy = os.environ[var]
+            print(f"[INFO] Wykryto proxy: {proxy} (z ${var})")
+            break
+    
+    # Instaluj ProxyHandler jeśli proxy wykryto
+    if proxy:
+        from urllib.request import ProxyHandler, build_opener, install_opener
+        proxy_handler = ProxyHandler({'http': proxy, 'https': proxy})
+        opener = build_opener(proxy_handler)
+        install_opener(opener)
+    
+    data = None
+    for url in CHROME_JSON_URLS:
+        try:
+            print(f"[INFO] Probuje: {url[:60]}...")
+            request = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urlopen(request, timeout=30) as response:
+                data = json.loads(response.read().decode())
+            print(f"[OK] Pobrano informacje o wersjach.")
+            break
+        except Exception as e:
+            print(f"[WARN] Nie udalo sie z tego URL: {e}")
+            continue
+    
+    if data is None:
+        print(f"[ERROR] Nie mozna pobrac informacji o wersjach z zadnego URL.")
+        print(f"[HINT] Jesli jestes za proxy, ustaw: export HTTPS_PROXY=http://proxy:8080")
         return False
     
     # 3. Znajdź URLe dla Chrome, chrome-headless-shell i ChromeDriver
