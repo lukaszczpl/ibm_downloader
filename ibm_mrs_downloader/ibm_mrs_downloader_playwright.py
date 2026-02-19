@@ -147,11 +147,13 @@ class IBMOpenSSHDownloader:
         no_proxy_autodetect: bool = False,
         parallel_downloads: int = 3,
         use_headless_shell: bool = False,
+        debug: bool = False,
     ):
         self.download_dir = download_dir or str(Path.cwd() / "downloads")
         self.profile_dir = profile_dir or str(Path.cwd() / ".chrome_profile")
         self.download_timeout = download_timeout
         self.parallel_downloads = max(1, parallel_downloads)
+        self.debug = debug
         os.makedirs(self.download_dir, exist_ok=True)
 
         self.playwright_instance = None
@@ -160,6 +162,32 @@ class IBMOpenSSHDownloader:
         self._browser_pids: List[int] = []  # PIDy procesów Chromium do force-kill
         self._cleaned_up = False  # zabezpieczenie przed podwójnym cleanup
         self.use_headless_shell = use_headless_shell
+
+        # Debug: verbose logi do pliku (.screenshot/playwright_debug.log)
+        if self.debug:
+            debug_log_dir = Path(__file__).parent / ".screenshot"
+            debug_log_dir.mkdir(exist_ok=True)
+            debug_log_file = debug_log_dir / "playwright_debug.log"
+
+            # FileHandler: DEBUG+ z timestampem do pliku
+            fh = logging.FileHandler(str(debug_log_file), mode="w", encoding="utf-8")
+            fh.setLevel(logging.DEBUG)
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            ))
+
+            # Dodaj handler do root loggera (łapie wszystko: playwright, urllib3, etc.)
+            logging.getLogger().addHandler(fh)
+
+            # Ustaw poziomy na DEBUG (stdout dalej INFO — tylko plik dostaje DEBUG)
+            log.setLevel(logging.DEBUG)
+            logging.getLogger("playwright").setLevel(logging.DEBUG)
+
+            # Zmienna środowiskowa dla wewnętrznych logów Playwright (protocol, CDP)
+            os.environ["DEBUG"] = "pw:api,pw:browser*"
+
+            log.info("TRYB DEBUG WLACZONY — logi: %s", debug_log_file)
 
         # Proxy: jawny argument > zmienna środowiskowa > brak
         if proxy:
@@ -216,7 +244,7 @@ class IBMOpenSSHDownloader:
             local_chrome = script_dir / "chrome" / "full" / chrome_name
             log.info("Tryb: pelny Chrome (domyslny)")
 
-        # --- Argumenty Chromium (stealth + stabilność + cisza w logach) ---
+        # --- Argumenty Chromium (stealth + stabilność) ---
         chromium_args = [
             "--disable-blink-features=AutomationControlled",
             "--disable-infobars",
@@ -229,12 +257,29 @@ class IBMOpenSSHDownloader:
             "--disable-features=LockProfileCookieDatabase,PasswordManagerOnboarding",
             "--safebrowsing-disable-download-protection",
             "--no-default-browser-check",
-            # Wyciszenie logów Chromium (zapobiega wyciekowi console.log ze stron do stdout)
-            "--disable-logging",
-            "--log-level=3",           # FATAL only
-            "--silent-debugger-extension-api",
-            "--disable-extensions-logging",
         ]
+
+        if self.debug:
+            # Debug: włącz verbose logi Chrome (stderr)
+            script_dir_log = Path(__file__).parent
+            chrome_debug_log = script_dir_log / ".screenshot" / "chrome_debug.log"
+            chrome_debug_log.parent.mkdir(exist_ok=True)
+            chromium_args.extend([
+                "--enable-logging=stderr",
+                "--log-level=0",           # INFO (najniższy = najbardziej gadatliwy)
+                "--v=1",                   # Verbose level 1
+                f"--log-file={chrome_debug_log}",
+                "--enable-crash-reporter",
+            ])
+            log.info("Chrome debug log: %s", chrome_debug_log)
+        else:
+            # Produkcja: wyciszenie logów Chromium
+            chromium_args.extend([
+                "--disable-logging",
+                "--log-level=3",           # FATAL only
+                "--silent-debugger-extension-api",
+                "--disable-extensions-logging",
+            ])
 
         # no-sandbox: wymagany dla root oraz środowisk bez user namespace (Docker, CI)
         if os.name != 'nt':
@@ -285,10 +330,11 @@ class IBMOpenSSHDownloader:
             launch_kwargs["proxy"] = {"server": self.proxy}
             log.info("Playwright bedzie uzywal proxy: %s", self.proxy)
 
-        # --- Firmowe CA (SSL inspection) ---
-        if self.corp_ca:
+        # --- SSL: ignoruj błędy certyfikatów przy proxy lub firmowym CA ---
+        # Korporacyjne proxy prawie zawsze robi MITM (SSL inspection)
+        if self.corp_ca or self.proxy:
             launch_kwargs["ignore_https_errors"] = True
-            log.info("Playwright: ignorowanie bledow SSL (firmowe CA / MITM)")
+            log.info("Playwright: ignorowanie bledow SSL (proxy/corp-ca MITM)")
 
         # --- Launch (persistent context = zachowuje cookies/sesję) ---
         try:
@@ -305,18 +351,29 @@ class IBMOpenSSHDownloader:
         # Użyj istniejącej strony lub utwórz nową
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
 
-        # --- Wyciszenie console.log ze stron (IBM JS generuje dużo śmieci) ---
-        # Przechwytujemy zdarzenia konsoli, ale NIE przekazujemy ich na stdout
-        self.page.on("console", lambda msg: None)
-        self.page.on("pageerror", lambda err: None)
+        # --- Console / page errors ---
+        if self.debug:
+            # Debug: loguj console.log i błędy ze stron
+            self.page.on("console", lambda msg: log.debug("[CONSOLE %s] %s", msg.type, msg.text))
+            self.page.on("pageerror", lambda err: log.debug("[PAGE_ERROR] %s", err))
+        else:
+            # Produkcja: wyciszenie (IBM JS generuje dużo śmieci)
+            self.page.on("console", lambda msg: None)
+            self.page.on("pageerror", lambda err: None)
 
         # --- Stealth: ukrycie śladów automatyzacji ---
         self._inject_stealth_js()
+
+        # --- Debug: loguj żądania sieciowe (request/response) ---
+        if self.debug:
+            self._attach_network_debug(self.page)
 
         mode_str = "headless" if headless else "interaktywny"
         log.info("Przegladarka uruchomiona (Playwright, pipe mode, %s)", mode_str)
         log.info("Profil: %s", self.profile_dir)
         log.info("Komunikacja: PIPE (brak otwartych portow TCP)")
+        if self.debug:
+            log.info("CHROMIUM ARGS: %s", " ".join(chromium_args))
 
     def _inject_stealth_js(self):
         """Wstrzykuje JS ukrywający ślady automatyzacji (via add_init_script)."""
@@ -356,6 +413,32 @@ class IBMOpenSSHDownloader:
             self.context.add_init_script(stealth_script)
         except Exception as e:
             log.warning("Nie udalo sie wstrzyknac stealth JS: %s", e)
+
+    def _attach_network_debug(self, page: "Page"):
+        """Podpina logowanie żądań sieciowych do strony (tryb debug)."""
+
+        def _on_request(request):
+            log.debug("[NET REQ] %s %s (resource: %s)", request.method, request.url[:200], request.resource_type)
+
+        def _on_response(response):
+            status = response.status
+            url = response.url[:200]
+            # Oznacz błędy wyraźnie
+            if status >= 400:
+                log.warning("[NET RESP %d] %s", status, url)
+            else:
+                log.debug("[NET RESP %d] %s", status, url)
+
+        def _on_request_failed(request):
+            failure = request.failure
+            log.warning("[NET FAIL] %s %s — %s", request.method, request.url[:200], failure)
+
+        try:
+            page.on("request", _on_request)
+            page.on("response", _on_response)
+            page.on("requestfailed", _on_request_failed)
+        except Exception as e:
+            log.warning("Nie udalo sie podpiac network debug: %s", e)
 
 
     # -----------------------------------------------------------------------
@@ -1325,6 +1408,11 @@ Format pliku credentials.ini:
         action="store_true",
         help="Uzyj okrojonej binarki chrome-headless-shell zamiast pelnego Chrome (mniejsza, ale gorzej omija detekcje botow)",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Wlacz tryb debug: verbose logi Playwright + Chrome, logowanie zadan sieciowych, console.log ze stron",
+    )
 
     args = parser.parse_args()
 
@@ -1345,6 +1433,7 @@ Format pliku credentials.ini:
         no_proxy_autodetect=args.no_proxy_autodetect,
         parallel_downloads=args.parallel,
         use_headless_shell=args.headless_shell,
+        debug=getattr(args, 'debug', False),
     )
 
     if args.auto_login:
