@@ -38,7 +38,6 @@ import re
 import argparse
 import configparser
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from typing import List, Optional, Set
@@ -460,7 +459,7 @@ class IBMOpenSSHDownloader:
     # Pobieranie wszystkich plików
     # -----------------------------------------------------------------------
     def _download_all_tar_z(self, urls: List[str], version_filter: str = None) -> int:
-        """Pobiera wszystkie pliki .tar.Z z podanych URL-i (rownolegle)."""
+        """Pobiera wszystkie pliki .tar.Z z podanych URL-i (rownolegle w batach)."""
         if not urls:
             log.warning("Brak plikow do pobrania")
             return 0
@@ -470,35 +469,106 @@ class IBMOpenSSHDownloader:
             log.info("Filtrowanie po wersji '%s': %d plik(ow)", version_filter, len(filtered))
             urls = filtered
 
-        workers = min(self.parallel_downloads, len(urls))
+        batch_size = max(1, self.parallel_downloads)
+
+        # Odfiltruj pliki ktore juz istnieja
+        to_download = []
+        for url in sorted(urls):
+            filename = urlparse(url).path.split("/")[-1]
+            filepath = Path(self.download_dir) / filename
+            if filepath.exists():
+                log.info("SKIP: %s – juz istnieje", filename)
+            else:
+                to_download.append(url)
+
+        already_have = len(urls) - len(to_download)
+        if not to_download:
+            log.info("Wszystkie pliki juz pobrane")
+            return already_have
+
         log.info(
-            "Rozpoczynam pobieranie %d plik(ow) (%d rownolegly(ch) watek/watkow)...",
-            len(urls), workers,
+            "Do pobrania: %d plik(ow) (batch po %d, pominieto %d istniejacych)",
+            len(to_download), batch_size, already_have,
         )
 
-        if workers <= 1:
-            # Sekwencyjnie (brak overhead z ThreadPool)
-            downloaded = 0
-            for url in sorted(urls):
-                if self._download_file(url):
-                    downloaded += 1
-            return downloaded
+        downloaded = already_have
 
-        # Rownolegle
+        # Procesuj w batach
+        for batch_start in range(0, len(to_download), batch_size):
+            batch = to_download[batch_start:batch_start + batch_size]
+            batch_num = batch_start // batch_size + 1
+            total_batches = (len(to_download) + batch_size - 1) // batch_size
+            log.info("--- Batch %d/%d (%d plikow) ---", batch_num, total_batches, len(batch))
+            downloaded += self._download_batch(batch)
+
+        return downloaded
+
+    def _download_batch(self, urls: List[str]) -> int:
+        """Pobiera batch plikow rownolegle – Chrome pobiera N plikow jednoczesnie."""
+        pages = []
+        pending = []  # list of (download_holder, filepath, filename, page)
         downloaded = 0
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_to_url = {
-                executor.submit(self._download_file, url): url
-                for url in sorted(urls)
-            }
-            for future in as_completed(future_to_url):
-                url = future_to_url[future]
-                try:
-                    if future.result():
-                        downloaded += 1
-                except Exception as e:
-                    fname = urlparse(url).path.split("/")[-1]
-                    log.error("Blad pobierania %s: %s", fname, e)
+
+        # Faza 1: Otworz strony i zainicjuj pobieranie
+        for url in urls:
+            filename = urlparse(url).path.split("/")[-1]
+            filepath = Path(self.download_dir) / filename
+
+            page = self.context.new_page()
+            page.on("console", lambda msg: None)
+            page.on("pageerror", lambda err: None)
+            pages.append(page)
+
+            # Callback – Chrome wywola go gdy zacznie pobieranie
+            download_holder = {"download": None}
+
+            def on_download(dl, holder=download_holder):
+                holder["download"] = dl
+
+            page.on("download", on_download)
+
+            log.info("Inicjuje: %s", filename)
+            try:
+                page.goto(url, wait_until="commit", timeout=60000)
+            except Exception as nav_err:
+                if "Download is starting" not in str(nav_err):
+                    log.error("Blad nawigacji %s: %s", filename, nav_err)
+                    continue
+            # Download zainicjowany – Chrome pobiera w tle
+            pending.append((download_holder, filepath, filename, page))
+
+        # Faza 2: Czekaj na zakonczenie pobran i zapisz pliki
+        for holder, filepath, filename, page in pending:
+            try:
+                download = holder["download"]
+                if download is None:
+                    log.error("Brak download event dla: %s", filename)
+                    continue
+
+                # save_as() blokuje az Chrome skonczy pobieranie
+                download.save_as(str(filepath))
+
+                failure = download.failure()
+                if failure:
+                    log.warning("Blad pobierania %s: %s", filename, failure)
+                    if filepath.exists():
+                        filepath.unlink()
+                    continue
+
+                size_mb = filepath.stat().st_size / (1024 * 1024)
+                log.info("OK: %s (%.2f MB)", filename, size_mb)
+                downloaded += 1
+
+            except Exception as e:
+                err_msg = str(e).splitlines()[0] if str(e) else type(e).__name__
+                log.error("Blad pobierania %s: %s", filename, err_msg)
+
+        # Faza 3: Zamknij strony
+        for page in pages:
+            try:
+                page.close()
+            except Exception:
+                pass
 
         return downloaded
 
