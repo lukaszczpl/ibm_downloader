@@ -196,7 +196,7 @@ class IBMOpenSSHDownloader:
             "viewport": {"width": 1920, "height": 1080},
             "user_agent": _USER_AGENT,
             "locale": "en-US",
-            "accept_downloads": False,  # pobieramy przez requests, nie przez przeglądarkę
+            "accept_downloads": True,  # pobieranie przez przeglądarkę (proxy auth)
         }
 
         # --- Lokalne Chrome lub Playwright's Chromium ---
@@ -386,7 +386,11 @@ class IBMOpenSSHDownloader:
     # Pobieranie pliku
     # -----------------------------------------------------------------------
     def _download_file(self, url: str, filename: str = None) -> bool:
-        """Pobiera plik przez Playwright (context.request) – dziedziczy proxy i cookies z Chrome."""
+        """Pobiera plik przez nawigację Chrome (page.goto + expect_download).
+        
+        Używa prawdziwego stosu sieciowego Chrome – proxy auth (NTLM/Kerberos)
+        i cookies są dziedziczone automatycznie.
+        """
         if not filename:
             filename = urlparse(url).path.split("/")[-1]
 
@@ -396,62 +400,51 @@ class IBMOpenSSHDownloader:
             log.info("SKIP: %s – juz istnieje", filename)
             return True
 
-        tmp_filepath = filepath.with_suffix(filepath.suffix + ".part")
-
         for attempt in range(1, 4):  # max 3 próby
+            download_page = None
             try:
                 log.info("Pobieranie [%d/3]: %s", attempt, filename)
 
-                # Playwright context.request – używa proxy + cookies przeglądarki
-                # (w tym NTLM/Kerberos auth do corporate proxy)
-                response = self.context.request.get(
-                    url,
-                    timeout=self.download_timeout * 1000,
-                )
+                # Nowa strona na każde pobieranie (nie zaburza głównej)
+                download_page = self.context.new_page()
+                download_page.on("console", lambda msg: None)
+                download_page.on("pageerror", lambda err: None)
 
-                if not response.ok:
-                    log.warning(
-                        "[%d/3] HTTP %d dla: %s", attempt, response.status, filename
-                    )
-                    response.dispose()
+                # Oczekuj na download event – Chrome pobiera .tar.Z jako plik
+                with download_page.expect_download(
+                    timeout=self.download_timeout * 1000
+                ) as download_info:
+                    download_page.goto(url, wait_until="commit", timeout=60000)
+
+                download = download_info.value
+
+                # Sprawdz blad pobierania
+                failure = download.failure()
+                if failure:
+                    log.warning("[%d/3] Blad pobierania %s: %s", attempt, filename, failure)
                     if attempt < 3:
                         time.sleep(5 * attempt)
                     continue
 
-                # Walidacja Content-Type (ochrona przed stronami blokady proxy)
-                content_type = response.headers.get("content-type", "")
-                if "text/html" in content_type.lower():
-                    log.warning(
-                        "[%d/3] Serwer zwrocil HTML zamiast pliku binarnego "
-                        "(prawdopodobnie strona blokady proxy/firewall): %s",
-                        attempt, filename,
-                    )
-                    response.dispose()
-                    if attempt < 3:
-                        time.sleep(5 * attempt)
-                    continue
-
-                # Pobierz ciało odpowiedzi i zapisz
-                body = response.body()
-                response.dispose()
-
-                with open(tmp_filepath, "wb") as f:
-                    f.write(body)
-
-                # Sukces – rename .part -> finalny plik
-                tmp_filepath.rename(filepath)
-                size_mb = len(body) / (1024 * 1024)
+                # Zapisz plik do katalogu docelowego
+                download.save_as(str(filepath))
+                size_mb = filepath.stat().st_size / (1024 * 1024)
                 log.info("OK: %s (%.2f MB)", filename, size_mb)
                 return True
 
             except Exception as e:
-                log.error("[%d/3] Blad pobierania %s: %s", attempt, filename, str(e).splitlines()[0])
+                err_msg = str(e).splitlines()[0] if str(e) else type(e).__name__
+                log.error("[%d/3] Blad pobierania %s: %s", attempt, filename, err_msg)
                 if attempt < 3:
                     time.sleep(3 * attempt)
 
-        # Cleanup pliku tymczasowego
-        if tmp_filepath.exists():
-            tmp_filepath.unlink()
+            finally:
+                if download_page:
+                    try:
+                        download_page.close()
+                    except Exception:
+                        pass
+
         return False
 
     # -----------------------------------------------------------------------
