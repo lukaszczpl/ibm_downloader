@@ -236,9 +236,31 @@ class IBMOpenSSHDownloader:
             "--disable-extensions-logging",
         ]
 
-        # no-sandbox wymagany w środowisku serwerowym (Linux root)
-        if os.name != 'nt' and os.getuid() == 0:
-            chromium_args.append("--no-sandbox")
+        # no-sandbox: wymagany dla root oraz środowisk bez user namespace (Docker, CI)
+        if os.name != 'nt':
+            try:
+                need_sandbox = os.getuid() == 0
+            except AttributeError:
+                need_sandbox = False
+            # Sprawdź czy sandbox jest dostępny (brak userns = trzeba wyłączyć)
+            if not need_sandbox:
+                try:
+                    # Jeśli /proc/sys/kernel/unprivileged_userns_clone istnieje i = 0 → no-sandbox
+                    userns = Path("/proc/sys/kernel/unprivileged_userns_clone")
+                    if userns.exists() and userns.read_text().strip() == "0":
+                        need_sandbox = True
+                except Exception:
+                    pass
+            if need_sandbox:
+                chromium_args.append("--no-sandbox")
+
+        # ignore-certificate-errors: wymagane przy korporacyjnym proxy MITM / SSL inspection
+        # Playwright ustawia ignore_https_errors=True tylko dla nawigacji, ale Chrome nadal
+        # może zablokować połączenie na poziomie sieci – stąd biały ekran.
+        if self.corp_ca or self.proxy:
+            chromium_args.append("--ignore-certificate-errors")
+            chromium_args.append("--ignore-ssl-errors")
+            log.info("Dodano --ignore-certificate-errors (proxy/corp-ca SSL inspection)")
 
         # --- Konfiguracja launch ---
         launch_kwargs = {
