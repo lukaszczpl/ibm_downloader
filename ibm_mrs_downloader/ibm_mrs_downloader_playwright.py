@@ -1115,20 +1115,124 @@ class IBMOpenSSHDownloader:
 
         log.info("Przegladarka zamknieta.")
 
+    def _sync_active_page(self):
+        """Przełącza self.page na aktywną stronę kontekstu.
+
+        IBM SSO często otwiera nowe taby/okna przy logowaniu.
+        Ta metoda wykrywa nowe strony i przełącza się na tę z treścią.
+        """
+        if not self.context:
+            return
+
+        pages = self.context.pages
+        if not pages:
+            return
+
+        if len(pages) == 1:
+            if self.page != pages[0]:
+                log.info("Przelaczono na jedyna dostepna strone")
+                self.page = pages[0]
+            return
+
+        # Wiele stron — wybierz najlepszą (nie about:blank, z treścią)
+        best_page = self.page  # domyślnie: obecna
+        best_score = -1
+
+        for p in pages:
+            try:
+                url = p.url or ""
+                score = 0
+
+                # Strona z prawdziwym URL dostaje punkty
+                if url and url != "about:blank":
+                    score += 10
+                # Strona IBM dostaje bonus
+                if "ibm.com" in url:
+                    score += 20
+                # Strona logowania dostaje bonus
+                if "login" in url or "accounts" in url or "sso" in url:
+                    score += 15
+
+                if score > best_score:
+                    best_score = score
+                    best_page = p
+            except Exception:
+                continue
+
+        if best_page != self.page:
+            try:
+                old_url = self.page.url if self.page else "?"
+            except Exception:
+                old_url = "?"
+            try:
+                new_url = best_page.url if best_page else "?"
+            except Exception:
+                new_url = "?"
+            log.info("Przelaczono strone: %s -> %s", old_url, new_url)
+            self.page = best_page
+
+            # Podepnij wyciszenie konsoli na nowej stronie
+            try:
+                self.page.on("console", lambda msg: None)
+                self.page.on("pageerror", lambda err: None)
+            except Exception:
+                pass
+
     def _save_diagnostic_screenshot(self, name: str, full_page: bool = True):
-        """Zapisuje zrzut ekranu diagnostyczny (numerowany sekwencyjnie)."""
+        """Zapisuje zrzut ekranu diagnostyczny (numerowany sekwencyjnie).
+
+        Przed zrzutem:
+        - synchronizuje self.page z aktywną stroną kontekstu
+        - czeka na załadowanie strony
+        - loguje URL i tytuł strony
+        """
         try:
             if not hasattr(self, '_screenshot_counter'):
                 self._screenshot_counter = 0
             self._screenshot_counter += 1
 
+            # Sync na aktywną stronę (IBM SSO może otworzyć nowy tab)
+            self._sync_active_page()
+
+            # Czekaj na załadowanie strony
+            try:
+                self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass  # timeout = strona mogła się już załadować
+
+            # Pobierz metadane strony
+            try:
+                page_url = self.page.url
+            except Exception:
+                page_url = "?"
+            try:
+                page_title = self.page.title()
+            except Exception:
+                page_title = "?"
+            try:
+                pages_count = len(self.context.pages) if self.context else 0
+            except Exception:
+                pages_count = 0
+
+            log.info("Screenshot [%02d] %s | URL: %s | Tytul: %s | Tabs: %d",
+                     self._screenshot_counter, name, page_url, page_title, pages_count)
+
+            # Zapisz screenshot
             script_dir = Path(__file__).parent
             screenshot_dir = script_dir / ".screenshot"
             screenshot_dir.mkdir(exist_ok=True)
             filename = f"{self._screenshot_counter:02d}_{name}.png"
             path = screenshot_dir / filename
             self.page.screenshot(path=str(path), full_page=full_page)
-            log.info("Screenshot [%02d]: %s", self._screenshot_counter, filename)
+
+            # Zapisz HTML obok screenshota (do analizy offline)
+            try:
+                html_path = screenshot_dir / f"{self._screenshot_counter:02d}_{name}.html"
+                html_content = self.page.content()
+                html_path.write_text(html_content, encoding="utf-8")
+            except Exception:
+                pass
+
         except Exception as e:
             log.warning("Nie udalo sie zapisac zrzutu ekranu: %s", e)
 
