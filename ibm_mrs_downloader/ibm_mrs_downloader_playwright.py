@@ -250,6 +250,7 @@ class IBMOpenSSHDownloader:
             "--disable-infobars",
             "--disable-dev-shm-usage",
             "--disable-gpu",
+            "--disable-breakpad",          # crashpad handler nie istnieje w headless-shell
             "--dns-result-order=ipv4first",
             # Przenośność profilu między platformami (Windows ↔ Linux):
             # Cookies w plaintext SQLite zamiast szyfrowania DPAPI/keyring
@@ -269,7 +270,6 @@ class IBMOpenSSHDownloader:
                 "--log-level=0",           # INFO (najniższy = najbardziej gadatliwy)
                 "--v=1",                   # Verbose level 1
                 f"--log-file={chrome_debug_log}",
-                "--enable-crash-reporter",
             ])
             log.info("Chrome debug log: %s", chrome_debug_log)
         else:
