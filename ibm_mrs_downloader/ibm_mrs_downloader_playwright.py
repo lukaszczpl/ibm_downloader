@@ -389,19 +389,32 @@ class IBMOpenSSHDownloader:
         """Czeka az strona z pakietami zostanie zaladowana."""
         log.info("Oczekiwanie na strone z pakietami (max %ds)...", timeout)
         start_time = time.time()
+        verification_prompted = False
 
         while time.time() - start_time < timeout:
             elapsed = int(time.time() - start_time)
 
-            # Sprawdz CAPTCHA
+            # Sprawdź CAPTCHA
             try:
                 content = self.page.content()
-                if "captcha" in content.lower():
+                content_lower = content.lower()
+                if "captcha" in content_lower:
                     log.warning("[%ds] Wykryto CAPTCHA! Wymagana interwencja.", elapsed)
+
+                # Sprawdź stronę weryfikacji IBM (2FA)
+                if not verification_prompted and any(kw in content_lower for kw in [
+                    "verification code", "verify code", "security code",
+                    "one-time", "otp",
+                ]):
+                    verification_prompted = True
+                    self._handle_ibm_verification_code()
+                    # Zresetuj timeout po wpisaniu kodu
+                    start_time = time.time()
+                    continue
             except Exception:
                 pass
 
-            # Sprawdz linki
+            # Sprawdź linki
             tar_z_links = self._find_tar_z_links()
             if tar_z_links:
                 log.info("Znaleziono %d plik(ow) .tar.Z po %ds", len(tar_z_links), elapsed)
@@ -698,8 +711,132 @@ class IBMOpenSSHDownloader:
             except Exception:
                 pass
 
+            # Sprawdź czy IBM prosi o kod weryfikacyjny (2FA)
+            self.page.wait_for_timeout(3000)
+            self._handle_ibm_verification_code()
+
         except Exception as e:
             log.warning("Blad podczas logowania IBMid: %s", str(e).splitlines()[0])
+
+    def _handle_ibm_verification_code(self, timeout: int = 300):
+        """Wykrywa stronę weryfikacji IBM i prosi użytkownika o wpisanie kodu."""
+        # Selektory typowe dla strony weryfikacji IBM
+        verification_selectors = [
+            "input[name='otp']",
+            "input[id='otp']",
+            "input[name='otpCode']",
+            "input[id='otpCode']",
+            "input[name='verification-code']",
+            "input[id='verification-code']",
+            "input[name='verificationCode']",
+            "input[id='verificationCode']",
+            "input[id='sms-code']",
+            "input[name='smsCode']",
+        ]
+
+        # Sprawdź treść strony pod kątem słów kluczowych
+        try:
+            content = self.page.content().lower()
+        except Exception:
+            return
+
+        is_verification_page = any(kw in content for kw in [
+            "verification code", "verify code", "weryfikac",
+            "security code", "one-time", "otp",
+            "potwierdzenie", "kod bezpiecze",
+        ])
+
+        if not is_verification_page:
+            return
+
+        log.info("=" * 60)
+        log.info("WYKRYTO STRONE WERYFIKACJI IBM (2FA)")
+        log.info("=" * 60)
+        log.info("IBM wyslal kod weryfikacyjny (np. email).")
+        log.info("Format kodu: Vxxxx-NNNNNN (potrzebna jest czesc po myslniku)")
+        log.info("")
+
+        # Znajdź pole do wpisania kodu
+        code_input = None
+        for selector in verification_selectors:
+            try:
+                el = self.page.query_selector(selector)
+                if el and el.is_visible():
+                    code_input = selector
+                    break
+            except Exception:
+                continue
+
+        # Fallback: szukaj dowolnego widocznego pola input type=text/tel/number
+        if not code_input:
+            for fallback_sel in [
+                "input[type='tel']",
+                "input[type='number']",
+                "input[type='text'][autocomplete='one-time-code']",
+                "input[type='text']",
+            ]:
+                try:
+                    el = self.page.query_selector(fallback_sel)
+                    if el and el.is_visible():
+                        code_input = fallback_sel
+                        log.info("Znaleziono pole kodu (fallback): %s", fallback_sel)
+                        break
+                except Exception:
+                    continue
+
+        if not code_input:
+            log.error("Nie znaleziono pola do wpisania kodu weryfikacyjnego!")
+            log.error("Sprobuj trybu interaktywnego: uruchom bez --auto-login")
+            self._save_diagnostic_screenshot("verification_no_input")
+            return
+
+        # Popros uzytkownika o kod
+        try:
+            code = input(">>> Wpisz kod weryfikacyjny IBM (6 cyfr): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            log.warning("Przerwano wpisywanie kodu weryfikacyjnego.")
+            return
+
+        if not code:
+            log.warning("Nie wpisano kodu weryfikacyjnego.")
+            return
+
+        # Usuń prefiks jeśli użytkownik wpisał cały kod (np. "V1974-770233")
+        if "-" in code:
+            code = code.split("-", 1)[1]
+        code = code.strip()
+
+        log.info("Wprowadzanie kodu weryfikacyjnego...")
+        try:
+            self.page.fill(code_input, code)
+            self.page.wait_for_timeout(500)
+
+            # Sprawdź przycisk submit
+            for btn_sel in [
+                "button[type='submit']",
+                "#verify-button",
+                "#submit-button",
+                "button:has-text('Verify')",
+                "button:has-text('Submit')",
+                "button:has-text('Continue')",
+                "button:has-text('Potwierdz')",
+            ]:
+                try:
+                    btn = self.page.query_selector(btn_sel)
+                    if btn and btn.is_visible():
+                        btn.click()
+                        log.info("Zatwierdzono kod weryfikacyjny")
+                        return
+                except Exception:
+                    continue
+
+            # Fallback: Enter
+            self.page.press(code_input, "Enter")
+            log.info("Zatwierdzono kod weryfikacyjny (ENTER)")
+
+        except Exception as e:
+            log.error("Blad podczas wpisywania kodu: %s", str(e).splitlines()[0])
+            self._save_diagnostic_screenshot("verification_error")
 
     # -----------------------------------------------------------------------
     # Sprawdzenie aktywnej sesji
