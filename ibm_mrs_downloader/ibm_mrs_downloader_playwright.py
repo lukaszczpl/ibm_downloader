@@ -257,6 +257,11 @@ class IBMOpenSSHDownloader:
             "--disable-gpu",
             "--disable-breakpad",          # crashpad handler nie istnieje w headless-shell
             "--dns-result-order=ipv4first",
+            # --- Stability & Linux Fixes ---
+            "--disable-setuid-sandbox",     # zapobiega niektórym crashom piaskownicy
+            "--no-zygote",                  # przydatne w kontenerach/środowiskach bez inita
+            "--disable-font-subpixel-positioning",  # mitigacja Skia font crash (FATAL)
+            # --- Profil ---
             # Przenośność profilu między platformami (Windows ↔ Linux):
             # Cookies w plaintext SQLite zamiast szyfrowania DPAPI/keyring
             "--password-store=basic",
@@ -528,6 +533,14 @@ class IBMOpenSSHDownloader:
         if not self.page:
             return
 
+        # Sprawdź czy strona żyje
+        try:
+            if self.page.is_closed():
+                log.debug("[DEBUG] Skip capture – strona zamknieta: %s", label)
+                return
+        except Exception:
+            return
+
         timestamp = time.strftime("%H%M%S")
         debug_dir = Path(__file__).parent / ".screenshot"
         debug_dir.mkdir(exist_ok=True)
@@ -535,22 +548,29 @@ class IBMOpenSSHDownloader:
         # 1. Screenshot
         screenshot_path = debug_dir / f"debug_{timestamp}_{label}.png"
         try:
-            self.page.screenshot(path=str(screenshot_path), full_page=False)
+            self.page.screenshot(path=str(screenshot_path), full_page=False, timeout=10000)
             log.info("[DEBUG] Screenshot saved: %s", screenshot_path.name)
         except Exception as e:
-            log.warning("[DEBUG] Failed to take screenshot: %s", e)
+            err_msg = str(e)
+            if "Target crashed" in err_msg or "context was destroyed" in err_msg:
+                log.warning("[DEBUG] Nie udalo sie zrobic zrzutu: STRONA ULEGŁA AWARII (Target crashed)")
+            else:
+                log.warning("[DEBUG] Failed to take screenshot: %s", err_msg)
 
         # 2. Metrics (RAM)
-        metrics = self._get_chrome_metrics()
-        if metrics:
-            # Konwersja na MB dla czytelności
-            js_heap = metrics.get("JSHeapUsedSize", 0) / (1024 * 1024)
-            total_js_heap = metrics.get("JSHeapTotalSize", 0) / (1024 * 1024)
-            nodes = metrics.get("Nodes", 0)
-            log.info(
-                "[DEBUG] RAM: JS Heap %.1f/%.1f MB | Nodes: %d | Label: %s",
-                js_heap, total_js_heap, nodes, label
-            )
+        try:
+            metrics = self._get_chrome_metrics()
+            if metrics:
+                # Konwersja na MB dla czytelności
+                js_heap = metrics.get("JSHeapUsedSize", 0) / (1024 * 1024)
+                total_js_heap = metrics.get("JSHeapTotalSize", 0) / (1024 * 1024)
+                nodes = metrics.get("Nodes", 0)
+                log.info(
+                    "[DEBUG] RAM: JS Heap %.1f/%.1f MB | Nodes: %d | Label: %s",
+                    js_heap, total_js_heap, nodes, label
+                )
+        except Exception as e:
+            log.debug("[DEBUG] Failed to get metrics during capture: %s", e)
 
 
     # -----------------------------------------------------------------------
