@@ -273,6 +273,11 @@ class IBMOpenSSHDownloader:
                 "--screen-info={1920x1080}",      # jawny rozmiar ekranu (brak X11 = brak defaults)
                 "--font-render-hinting=none",     # bez hintingu fontów (serwer bez fontów X11)
                 "--disable-software-rasterizer",  # unikaj fallback do software renderingu
+                # --- Oszczędność pamięci (serwery z 1-2 GB RAM) ---
+                "--js-flags=--max-old-space-size=256",  # limit V8 heap do 256 MB
+                "--renderer-process-limit=1",     # max 1 proces renderera
+                "--disable-accelerated-2d-canvas", # bez akceleracji canvas
+                "--blink-settings=imagesEnabled=false",  # nie ładuj obrazów (oszczędność RAM)
             ])
 
         if self.debug:
@@ -389,6 +394,46 @@ class IBMOpenSSHDownloader:
         log.info("Komunikacja: PIPE (brak otwartych portow TCP)")
         if self.debug:
             log.info("CHROMIUM ARGS: %s", " ".join(chromium_args))
+
+        # --- Blokuj ciężkie zasoby (oszczędność RAM na serwerach z 1-2 GB) ---
+        if headless:
+            self._block_heavy_resources()
+
+    def _block_heavy_resources(self):
+        """Blokuje ciężkie zasoby sieciowe by zmniejszyć zużycie RAM.
+
+        Nie wpływa na działanie — linki .tar.Z są w HTML, nie w obrazach.
+        """
+        # Typy zasobów do blokowania (Playwright resource types)
+        blocked_types = {"image", "media", "font", "stylesheet"}
+
+        # Domeny analityczne/trackingowe (IBM ładuje ich dużo)
+        blocked_domains = [
+            "analytics.", "tracking.", "tags.", "pixel.",
+            "doubleclick.", "google-analytics.", "googletagmanager.",
+            "hotjar.", "newrelic.", "nr-data.", "bat.bing.",
+            "facebook.", "demdex.", "omtrdc.", "2o7.",
+        ]
+
+        def _route_handler(route):
+            req = route.request
+            # Blokuj po typie zasobu
+            if req.resource_type in blocked_types:
+                route.abort()
+                return
+            # Blokuj domeny analityczne
+            url_lower = req.url.lower()
+            for domain in blocked_domains:
+                if domain in url_lower:
+                    route.abort()
+                    return
+            route.continue_()
+
+        try:
+            self.context.route("**/*", _route_handler)
+            log.info("Blokowanie ciezkich zasobow: images, fonts, media, analytics")
+        except Exception as e:
+            log.warning("Nie udalo sie ustawic blokowania zasobow: %s", e)
 
     def _inject_stealth_js(self):
         """Wstrzykuje JS ukrywający ślady automatyzacji (via add_init_script)."""
