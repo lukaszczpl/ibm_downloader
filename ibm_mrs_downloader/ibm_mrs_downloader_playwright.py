@@ -265,6 +265,16 @@ class IBMOpenSSHDownloader:
             "--no-default-browser-check",
         ]
 
+        # Flagi specyficzne dla chrome-headless-shell
+        # (binarka okrojona — wymaga jawnych ustawień ekranu i renderingu)
+        if self.use_headless_shell:
+            chromium_args.extend([
+                "--no-sandbox",                  # headless-shell nie wspiera sandbox
+                "--screen-info={1920x1080}",      # jawny rozmiar ekranu (brak X11 = brak defaults)
+                "--font-render-hinting=none",     # bez hintingu fontów (serwer bez fontów X11)
+                "--disable-software-rasterizer",  # unikaj fallback do software renderingu
+            ])
+
         if self.debug:
             # Debug: włącz verbose logi Chrome (stderr)
             script_dir_log = Path(__file__).parent
@@ -1005,7 +1015,26 @@ class IBMOpenSSHDownloader:
 
         try:
             self._setup_browser(headless=False)
-            self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+            self._screenshot_counter = 0
+
+            # Nawigacja z retry — "Page crashed" może być spowodowane uszkodzonym profilem
+            try:
+                self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+            except Exception as goto_err:
+                if "Page crashed" in str(goto_err) or "Target closed" in str(goto_err):
+                    log.warning("Strona ulegla awarii — usuwam profil i ponawiam...")
+                    self._cleanup()
+                    # Usun uszkodzony profil
+                    import shutil
+                    if os.path.exists(self.profile_dir):
+                        shutil.rmtree(self.profile_dir, ignore_errors=True)
+                        log.info("Usunieto uszkodzony profil: %s", self.profile_dir)
+                    self._cleaned_up = False
+                    self._setup_browser(headless=False)
+                    self._screenshot_counter = 0
+                    self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+                else:
+                    raise
 
             log.info("")
             log.info("Przegladarka jest otwarta. Zaloguj sie na stronie IBM.")
@@ -1046,7 +1075,25 @@ class IBMOpenSSHDownloader:
         try:
             self._setup_browser(headless=True)
             self._screenshot_counter = 0  # Reset licznika screenshotów
-            self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+
+            # Nawigacja z retry — "Page crashed" może być spowodowane uszkodzonym profilem
+            try:
+                self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+            except Exception as goto_err:
+                if "Page crashed" in str(goto_err) or "Target closed" in str(goto_err):
+                    log.warning("Strona ulegla awarii — usuwam profil i ponawiam...")
+                    self._cleanup()
+                    import shutil
+                    if os.path.exists(self.profile_dir):
+                        shutil.rmtree(self.profile_dir, ignore_errors=True)
+                        log.info("Usunieto uszkodzony profil: %s", self.profile_dir)
+                    self._cleaned_up = False
+                    self._setup_browser(headless=True)
+                    self._screenshot_counter = 0
+                    self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+                else:
+                    raise
+
             self._save_diagnostic_screenshot("page_loaded")
 
             # Sprawdź czy sesja z profilu jest aktywna
