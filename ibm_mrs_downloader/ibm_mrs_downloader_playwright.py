@@ -314,9 +314,10 @@ class IBMOpenSSHDownloader:
         # Na Linuxie (często serwerowym np. /u01) sandbox sprawia najwięcej problemów
         if os.name != 'nt':
             chromium_args.append("--no-sandbox")
-            # Przenieś cache do RAM aby uniknąć błędów I/O w /u01
-            chromium_args.append("--disk-cache-dir=/dev/shm")
-            log.info("Dodano --no-sandbox oraz --disk-cache-dir=/dev/shm (Linux/server optimization)")
+            # Przenieś cache do /tmp (często RAM-backed) aby uniknąć błędów I/O w /u01
+            # Unikamy /dev/shm bezpośrednio ze względu na limity wielkości w Dockerze
+            chromium_args.append("--disk-cache-dir=/tmp/ibm_chrome_cache")
+            log.info("Dodano --no-sandbox oraz --disk-cache-dir=/tmp/ibm_chrome_cache (Linux optimization)")
 
         # ignore-certificate-errors: wymagane przy korporacyjnym proxy MITM / SSL inspection
         # Playwright ustawia ignore_https_errors=True tylko dla nawigacji, ale Chrome nadal
