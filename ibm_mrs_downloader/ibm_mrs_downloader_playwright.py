@@ -1031,6 +1031,7 @@ class IBMOpenSSHDownloader:
         self,
         version_filter: str = None,
         credentials_file: str = None,
+        export_urls: str = None,
     ):
         """Glowna metoda – headless (batch mode)."""
         log.info("=" * 60)
@@ -1092,14 +1093,33 @@ class IBMOpenSSHDownloader:
             log.info("-" * 60)
 
             tar_z_urls = self._find_tar_z_links()
+
+            # Filtrowanie wersji
+            if tar_z_urls and version_filter:
+                tar_z_urls = [u for u in tar_z_urls if version_filter.lower() in u.lower()]
+                log.info("Po filtrze wersji '%s': %d plik(ow)", version_filter, len(tar_z_urls))
+
             if tar_z_urls:
                 log.info("Znalezione pliki:")
                 for url in sorted(tar_z_urls):
                     filename = urlparse(url).path.split("/")[-1]
                     log.info("  - %s", filename)
 
-                downloaded = self._download_all_tar_z(tar_z_urls, version_filter)
-                log.info("Pobrano %d/%d plik(ow)", downloaded, len(tar_z_urls))
+                # --export-urls: zapisz URL-e do pliku i zakoncz (bez pobierania)
+                if export_urls:
+                    try:
+                        urls_dir = Path(__file__).parent / "urls"
+                        urls_dir.mkdir(exist_ok=True)
+                        export_path = urls_dir / Path(export_urls).name
+                        with open(export_path, "w", encoding="utf-8") as f:
+                            for url in sorted(tar_z_urls):
+                                f.write(url + "\n")
+                        log.info("Wyeksportowano %d URL(i) do: %s", len(tar_z_urls), export_path)
+                    except Exception as e:
+                        log.error("Blad zapisu URL-i do pliku: %s", e)
+                else:
+                    downloaded = self._download_all_tar_z(tar_z_urls)
+                    log.info("Pobrano %d/%d plik(ow)", downloaded, len(tar_z_urls))
             else:
                 log.warning("Strona zaladowana ale brak plikow .tar.Z")
                 self._save_diagnostic_screenshot("no_files_found")
@@ -1413,6 +1433,12 @@ Format pliku credentials.ini:
         action="store_true",
         help="Wlacz tryb debug: verbose logi Playwright + Chrome, logowanie zadan sieciowych, console.log ze stron",
     )
+    parser.add_argument(
+        "--export-urls",
+        metavar="PLIK",
+        help="Eksportuj znalezione URL-e do pliku (bez pobierania). Np: --export-urls urls.txt",
+        default=None,
+    )
 
     args = parser.parse_args()
 
@@ -1441,6 +1467,7 @@ Format pliku credentials.ini:
         downloader.run(
             version_filter=args.version,
             credentials_file=args.auto_login,
+            export_urls=args.export_urls,
         )
     else:
         # Tryb interaktywny (widoczna przegladarka)
