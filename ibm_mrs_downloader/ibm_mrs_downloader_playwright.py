@@ -227,6 +227,10 @@ class IBMOpenSSHDownloader:
             log.warning("chrome-headless-shell nie wspiera trybu interaktywnego (headed) — wymuszam headless=True")
             headless = True
 
+        # --- Linux: Fontconfig Fallback ---
+        if os.name != 'nt':
+            self._ensure_linux_fontconfig()
+
         self.playwright_instance = sync_playwright().start()
 
         # --- Opcjonalne: lokalne binarium Chrome ---
@@ -478,6 +482,47 @@ class IBMOpenSSHDownloader:
             self.context.add_init_script(stealth_script)
         except Exception as e:
             log.warning("Nie udalo sie wstrzyknac stealth JS: %s", e)
+
+    def _ensure_linux_fontconfig(self):
+        """Tworzy minimalny plik fonts.conf jeśli systemowy nie istnieje.
+        
+        Zapobiega 'Fontconfig error: Cannot load default config file' i crashom Skia.
+        """
+        system_fonts_conf = Path("/etc/fonts/fonts.conf")
+        if system_fonts_conf.exists():
+            return
+
+        profile_path = Path(self.profile_dir).expanduser().resolve()
+        profile_path.mkdir(exist_ok=True, parents=True)
+        
+        local_fonts_conf = profile_path / "fonts.conf"
+        
+        # Minimalna konfiguracja czcionek
+        fonts_xml = """<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+    <!-- Gdzie szukać czcionek w systemie -->
+    <dir>/usr/share/fonts</dir>
+    <dir>/usr/local/share/fonts</dir>
+    <dir>~/.fonts</dir>
+    <dir>~/.local/share/fonts</dir>
+
+    <!-- Cache w katalogu profilu -->
+    <cachedir prefix="xdg">fontconfig</cachedir>
+    <cachedir>~/.fontconfig</cachedir>
+
+    <config>
+        <rescan><int>30</int></rescan>
+    </config>
+</fontconfig>
+"""
+        try:
+            local_fonts_conf.write_text(fonts_xml, encoding="utf-8")
+            # Ustaw zmienną środowiskową dla Fontconfig
+            os.environ["FONTCONFIG_PATH"] = str(profile_path)
+            log.info("Zastosowano Portable Fontconfig Fallback: %s", local_fonts_conf)
+        except Exception as e:
+            log.warning("Nie udalo sie stworzyc fontconfig fallback: %s", e)
 
     def _attach_network_debug(self, page: "Page"):
         """Podpina logowanie żądań sieciowych do strony (tryb debug)."""
