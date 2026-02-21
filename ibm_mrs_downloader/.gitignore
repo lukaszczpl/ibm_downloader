@@ -14,7 +14,6 @@
 !requirements_playwright.txt
 !README.md
 !.gitignore
-!local_assets/
 
 # Ignore downloaded binaries and temp files
 chrome/
