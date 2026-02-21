@@ -261,6 +261,8 @@ class IBMOpenSSHDownloader:
             "--disable-setuid-sandbox",     # zapobiega niektórym crashom piaskownicy
             "--no-zygote",                  # przydatne w kontenerach/środowiskach bez inita
             "--disable-font-subpixel-positioning",  # mitigacja Skia font crash (FATAL)
+            "--disable-features=SkiaFontService,FontationBackend", # wymuś stary mechanizm fontów
+            "--disable-remote-fonts",       # blokuj ładowanie czcionek z sieci
             # --- Profil ---
             # Przenośność profilu między platformami (Windows ↔ Linux):
             # Cookies w plaintext SQLite zamiast szyfrowania DPAPI/keyring
@@ -307,22 +309,10 @@ class IBMOpenSSHDownloader:
             ])
 
         # no-sandbox: wymagany dla root oraz środowisk bez user namespace (Docker, CI)
+        # Na Linuxie (często serwerowym np. /u01) sandbox sprawia najwięcej problemów
         if os.name != 'nt':
-            try:
-                need_sandbox = os.getuid() == 0
-            except AttributeError:
-                need_sandbox = False
-            # Sprawdź czy sandbox jest dostępny (brak userns = trzeba wyłączyć)
-            if not need_sandbox:
-                try:
-                    # Jeśli /proc/sys/kernel/unprivileged_userns_clone istnieje i = 0 → no-sandbox
-                    userns = Path("/proc/sys/kernel/unprivileged_userns_clone")
-                    if userns.exists() and userns.read_text().strip() == "0":
-                        need_sandbox = True
-                except Exception:
-                    pass
-            if need_sandbox:
-                chromium_args.append("--no-sandbox")
+            chromium_args.append("--no-sandbox")
+            log.info("Dodano --no-sandbox (wymagane na Linux/server)")
 
         # ignore-certificate-errors: wymagane przy korporacyjnym proxy MITM / SSL inspection
         # Playwright ustawia ignore_https_errors=True tylko dla nawigacji, ale Chrome nadal
