@@ -484,45 +484,62 @@ class IBMOpenSSHDownloader:
             log.warning("Nie udalo sie wstrzyknac stealth JS: %s", e)
 
     def _ensure_linux_fontconfig(self):
-        """Tworzy minimalny plik fonts.conf jeśli systemowy nie istnieje.
+        """Tworzy minimalny plik fonts.conf i sprawdza dostępność czcionek.
         
         Zapobiega 'Fontconfig error: Cannot load default config file' i crashom Skia.
         """
         system_fonts_conf = Path("/etc/fonts/fonts.conf")
-        if system_fonts_conf.exists():
-            return
-
         profile_path = Path(self.profile_dir).expanduser().resolve()
         profile_path.mkdir(exist_ok=True, parents=True)
         
-        local_fonts_conf = profile_path / "fonts.conf"
-        
-        # Minimalna konfiguracja czcionek
-        fonts_xml = """<?xml version="1.0"?>
+        if not system_fonts_conf.exists():
+            local_fonts_conf = profile_path / "fonts.conf"
+            # Minimalna konfiguracja czcionek
+            fonts_xml = """<?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
-    <!-- Gdzie szukać czcionek w systemie -->
     <dir>/usr/share/fonts</dir>
     <dir>/usr/local/share/fonts</dir>
     <dir>~/.fonts</dir>
     <dir>~/.local/share/fonts</dir>
-
-    <!-- Cache w katalogu profilu -->
+    <dir>""" + str(profile_path) + """</dir>
     <cachedir prefix="xdg">fontconfig</cachedir>
     <cachedir>~/.fontconfig</cachedir>
-
-    <config>
-        <rescan><int>30</int></rescan>
-    </config>
+    <config><rescan><int>30</int></rescan></config>
 </fontconfig>
 """
-        try:
-            local_fonts_conf.write_text(fonts_xml, encoding="utf-8")
-            # Ustaw zmienną środowiskową dla Fontconfig
+            try:
+                local_fonts_conf.write_text(fonts_xml, encoding="utf-8")
+                os.environ["FONTCONFIG_PATH"] = str(profile_path)
+                log.info("Zastosowano Portable Fontconfig Fallback: %s", local_fonts_conf)
+            except Exception as e:
+                log.warning("Nie udalo sie stworzyc fontconfig fallback: %s", e)
+
+        # --- Sprawdź czy w systemie są JAKIEKOLWIEK czcionki (TTF/OTF) ---
+        font_paths = [
+            "/usr/share/fonts", "/usr/local/share/fonts", 
+            "~/.fonts", "~/.local/share/fonts"
+        ]
+        found_fonts = False
+        for p in font_paths:
+            full_path = Path(p).expanduser()
+            if full_path.exists():
+                # Szukaj rekurencyjnie dowolnego pliku ttf/otf
+                try:
+                    if any(full_path.rglob("*.ttf")) or any(full_path.rglob("*.otf")):
+                        found_fonts = True
+                        break
+                except Exception:
+                    continue
+        
+        if not found_fonts:
+            log.error("CRITICAL: Nie znaleziono zadnych czcionek w systemie! Chrome ulegnie awarii (FATAL).")
+            log.error("Aby naprawic ten problem:")
+            log.error("  1. Zainstaluj czcionki systemowe: sudo apt-get install fonts-liberation")
+            log.error("  2. LUB wgraj pliki .ttf do katalogu: ~/.local/share/fonts/")
+            log.error("  3. LUB do katalogu profilu: %s", profile_path)
+            # Dodaj katalog profilu do listy przeszukiwanych jeśli user tam wrzuci fonty
             os.environ["FONTCONFIG_PATH"] = str(profile_path)
-            log.info("Zastosowano Portable Fontconfig Fallback: %s", local_fonts_conf)
-        except Exception as e:
-            log.warning("Nie udalo sie stworzyc fontconfig fallback: %s", e)
 
     def _attach_network_debug(self, page: "Page"):
         """Podpina logowanie żądań sieciowych do strony (tryb debug)."""
