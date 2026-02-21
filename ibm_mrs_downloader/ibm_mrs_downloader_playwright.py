@@ -538,8 +538,11 @@ class IBMOpenSSHDownloader:
             log.error("  1. Zainstaluj czcionki systemowe: sudo apt-get install fonts-liberation")
             log.error("  2. LUB wgraj pliki .ttf do katalogu: ~/.local/share/fonts/")
             log.error("  3. LUB do katalogu profilu: %s", profile_path)
-            # Dodaj katalog profilu do listy przeszukiwanych jeśli user tam wrzuci fonty
-            os.environ["FONTCONFIG_PATH"] = str(profile_path)
+            
+            raise RuntimeError(
+                "Brak czcionek w systemie. Doinstaluj 'fonts-liberation' lub "
+                f"wgraj pliki .ttf do katalogu profilu: {profile_path}"
+            )
 
     def _attach_network_debug(self, page: "Page"):
         """Podpina logowanie żądań sieciowych do strony (tryb debug)."""
