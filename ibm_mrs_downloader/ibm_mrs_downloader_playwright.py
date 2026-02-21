@@ -222,6 +222,11 @@ class IBMOpenSSHDownloader:
                 "  playwright install chromium"
             )
 
+        # chrome-headless-shell nie obsługuje trybu z oknem — wymuszamy headless
+        if self.use_headless_shell and not headless:
+            log.warning("chrome-headless-shell nie wspiera trybu interaktywnego (headed) — wymuszam headless=True")
+            headless = True
+
         self.playwright_instance = sync_playwright().start()
 
         # --- Opcjonalne: lokalne binarium Chrome ---
