@@ -363,6 +363,11 @@ class IBMOpenSSHDownloader:
             )
         except Exception as e:
             log.error("Nie udalo sie uruchomiac przegladarki: %s", e)
+            if self.debug:
+                # Jeśli padło przy launchu, to page może nie istnieć, ale spróbujmy
+                try:
+                    self._capture_debug_state("launch_failure")
+                except: pass
             log.error("Upewnij sie, ze Chromium jest zainstalowane: playwright install chromium")
             if os.name != 'nt':
                 log.error("Na Linuxie moze byc potrzebne: playwright install-deps chromium")
@@ -500,6 +505,53 @@ class IBMOpenSSHDownloader:
         except Exception as e:
             log.warning("Nie udalo sie podpiac network debug: %s", e)
 
+    # -----------------------------------------------------------------------
+    # Memory & State Debug
+    # -----------------------------------------------------------------------
+    def _get_chrome_metrics(self) -> dict:
+        """Retrieves performance/memory metrics via CDP."""
+        if not self.page:
+            return {}
+        try:
+            # CDP Performance.getMetrics
+            cdp = self.page.context.new_cdp_session(self.page)
+            cdp.send("Performance.enable")
+            metrics_resp = cdp.send("Performance.getMetrics")
+            metrics = {m["name"]: m["value"] for m in metrics_resp.get("metrics", [])}
+            return metrics
+        except Exception as e:
+            log.debug("Failed to get CDP metrics: %s", e)
+            return {}
+
+    def _capture_debug_state(self, label: str):
+        """Captures a screenshot and logs memory metrics."""
+        if not self.page:
+            return
+
+        timestamp = time.strftime("%H%M%S")
+        debug_dir = Path(__file__).parent / ".screenshot"
+        debug_dir.mkdir(exist_ok=True)
+
+        # 1. Screenshot
+        screenshot_path = debug_dir / f"debug_{timestamp}_{label}.png"
+        try:
+            self.page.screenshot(path=str(screenshot_path), full_page=False)
+            log.info("[DEBUG] Screenshot saved: %s", screenshot_path.name)
+        except Exception as e:
+            log.warning("[DEBUG] Failed to take screenshot: %s", e)
+
+        # 2. Metrics (RAM)
+        metrics = self._get_chrome_metrics()
+        if metrics:
+            # Konwersja na MB dla czytelności
+            js_heap = metrics.get("JSHeapUsedSize", 0) / (1024 * 1024)
+            total_js_heap = metrics.get("JSHeapTotalSize", 0) / (1024 * 1024)
+            nodes = metrics.get("Nodes", 0)
+            log.info(
+                "[DEBUG] RAM: JS Heap %.1f/%.1f MB | Nodes: %d | Label: %s",
+                js_heap, total_js_heap, nodes, label
+            )
+
 
     # -----------------------------------------------------------------------
     # Parsowanie linków
@@ -572,6 +624,10 @@ class IBMOpenSSHDownloader:
 
         while time.time() - start_time < timeout:
             elapsed = int(time.time() - start_time)
+
+            # --- Memory Monitoring & Debug Capture (Headless) ---
+            if self.debug and elapsed % 30 == 0:
+                self._capture_debug_state(f"packages_page_wait_{elapsed}s")
 
             # Sprawdź CAPTCHA
             try:
@@ -1304,6 +1360,11 @@ class IBMOpenSSHDownloader:
         if self._cleaned_up:
             return
         self._cleaned_up = True
+
+        if self.debug:
+            try:
+                self._capture_debug_state("final_cleanup")
+            except: pass
 
         # Zbierz PIDy PRZED zamknięciem (na wypadek gdyby graceful zawiódł)
         self._collect_browser_pids()
