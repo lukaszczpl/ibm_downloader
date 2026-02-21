@@ -162,6 +162,7 @@ class IBMOpenSSHDownloader:
         self._browser_pids: List[int] = []  # PIDy procesów Chromium do force-kill
         self._cleaned_up = False  # zabezpieczenie przed podwójnym cleanup
         self.use_headless_shell = use_headless_shell
+        self.failed_resources = []  # Lista (url, status, type) zasobów z błędem
 
         # Debug: verbose logi do pliku (.screenshot/playwright_debug.log)
         if self.debug:
@@ -276,6 +277,9 @@ class IBMOpenSSHDownloader:
             "--disable-features=LockProfileCookieDatabase,PasswordManagerOnboarding",
             "--safebrowsing-disable-download-protection",
             "--no-default-browser-check",
+            # --- Proxy & NTLM Whitelisting (pomaga przy 407 na Linuxie) ---
+            '--auth-server-whitelist="*.ibm.com,*.s81c.com,*.cloudflare.com,*.jsdelivr.net,*.newrelic.com"',
+            '--auth-negotiate-delegate-whitelist="*.ibm.com"',
         ]
 
         # Flagi specyficzne dla chrome-headless-shell
@@ -543,23 +547,28 @@ class IBMOpenSSHDownloader:
             sys.exit(1)
 
     def _attach_network_debug(self, page: "Page"):
-        """Podpina logowanie żądań sieciowych do strony (tryb debug)."""
+        """Podpina logowanie żądań sieciowych do strony."""
 
         def _on_request(request):
-            log.debug("[NET REQ] %s %s (resource: %s)", request.method, request.url[:200], request.resource_type)
+            log.debug("[NET REQ] %s %s (resource: %s)", request.method, request.url, request.resource_type)
 
         def _on_response(response):
             status = response.status
-            url = response.url[:200]
-            # Oznacz błędy wyraźnie
+            url = response.url
             if status >= 400:
-                log.warning("[NET RESP %d] %s", status, url)
+                self.failed_resources.append((url, status, response.request.resource_type))
+                if status == 407:
+                    log.warning("[NET RESP 407] %s — PROXY AUTH REQUIRED", url)
+                else:
+                    log.warning("[NET RESP %d] %s", status, url)
             else:
                 log.debug("[NET RESP %d] %s", status, url)
 
         def _on_request_failed(request):
             failure = request.failure
-            log.warning("[NET FAIL] %s %s — %s", request.method, request.url[:200], failure)
+            url = request.url
+            self.failed_resources.append((url, 0, request.resource_type))
+            log.warning("[NET FAIL] %s %s — %s", request.method, url, failure)
 
         try:
             page.on("request", _on_request)
@@ -567,6 +576,43 @@ class IBMOpenSSHDownloader:
             page.on("requestfailed", _on_request_failed)
         except Exception as e:
             log.warning("Nie udalo sie podpiac network debug: %s", e)
+
+    def _log_failed_resources_summary(self):
+        """Wyświetla podsumowanie zablokowanych lub nieudanych zasobów."""
+        if not self.failed_resources:
+            return
+
+        log.error("--- PODSUMOWANIE BLEDOW SIECIOWYCH ---")
+        ibm_core_failed = False
+        
+        # Unikalne błędy (grupowanie po statusie i typie zasobu)
+        unique_failures = {}
+        for url, status, rtype in self.failed_resources:
+            key = (status, rtype)
+            if key not in unique_failures:
+                unique_failures[key] = []
+            if len(unique_failures[key]) < 3: # max 3 przykłady na typ błędu
+                unique_failures[key].append(url)
+            
+            # Kluczowy plik dla stabilności strony IBM
+            if "www.js" in url and "s81c.com" in url:
+                ibm_core_failed = True
+
+        for (status, rtype), urls in unique_failures.items():
+            example = urls[0]
+            count = len([u for u, s, t in self.failed_resources if s == status and t == rtype])
+            status_text = f"Kod {status}" if status > 0 else "FAIL (Brak polaczenia/Blokada)"
+            log.error("[%s] %s (typ: %s) | Zasobow: %d | Przyklad: %s", 
+                      "ERROR" if (status >= 500 or status == 0) else "WARNING", 
+                      status_text, rtype, count, example)
+
+        if ibm_core_failed:
+            log.error("CRITICAL: Nie udalo sie zaladowac IBMCore (www.js). Strona IBM nie bedzie dzialac!")
+            log.error("To najczesciej oznacza blokade domeny *.s81c.com lub brak autoryzacji proxy (407).")
+        
+        log.error("--------------------------------------")
+        # Wyczyść listę po raporcie
+        self.failed_resources = []
 
     # -----------------------------------------------------------------------
     # Memory & State Debug
@@ -1036,9 +1082,12 @@ class IBMOpenSSHDownloader:
             self.page.wait_for_timeout(3000)
             self._save_diagnostic_screenshot("ibm_after_password")
             self._handle_ibm_verification_code()
+            return True
 
         except Exception as e:
-            log.warning("Blad podczas logowania IBMid: %s", str(e).splitlines()[0])
+            log.warning("Blad podczas logowania IBMid: %s", e)
+            self._log_failed_resources_summary()
+            return False
 
     def _handle_ibm_verification_code(self, timeout: int = 300):
         """Wykrywa stronę weryfikacji IBM i prosi użytkownika o wpisanie kodu."""
@@ -1112,6 +1161,7 @@ class IBMOpenSSHDownloader:
             log.error("Nie znaleziono pola do wpisania kodu weryfikacyjnego!")
             log.error("Sprobuj trybu interaktywnego: uruchom bez --auto-login")
             self._save_diagnostic_screenshot("verification_no_input")
+            self._log_failed_resources_summary()
             return
 
         # Popros uzytkownika o kod
