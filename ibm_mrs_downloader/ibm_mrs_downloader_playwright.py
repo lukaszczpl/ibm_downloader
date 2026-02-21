@@ -163,6 +163,7 @@ class IBMOpenSSHDownloader:
         self._cleaned_up = False  # zabezpieczenie przed podwójnym cleanup
         self.use_headless_shell = use_headless_shell
         self.failed_resources = []  # Lista (url, status, type) zasobów z błędem
+        self.local_assets_dir = Path(self.profile_dir).expanduser().resolve().parent / "local_assets"
 
         # Debug: verbose logi do pliku (.screenshot/playwright_debug.log)
         if self.debug:
@@ -408,9 +409,12 @@ class IBMOpenSSHDownloader:
         if self.debug:
             log.info("CHROMIUM ARGS: %s", " ".join(chromium_args))
 
-        # --- Blokuj ciężkie zasoby (oszczędność RAM na serwerach z 1-2 GB) ---
+        # --- Blokuj ciężkie zasoby ---
         if headless:
             self._block_heavy_resources()
+
+        # --- Local Asset Injection (Proxy Bypass) ---
+        self._setup_local_asset_routing()
 
     def _block_heavy_resources(self):
         """Blokuje ciężkie zasoby sieciowe by zmniejszyć zużycie RAM.
@@ -447,6 +451,60 @@ class IBMOpenSSHDownloader:
             log.info("Blokowanie ciezkich zasobow: images, fonts, media, analytics")
         except Exception as e:
             log.warning("Nie udalo sie ustawic blokowania zasobow: %s", e)
+
+    def _setup_local_asset_routing(self):
+        """Ustawia routing dla lokalnych zasobów (Local Asset Injection).
+        
+        Pozwala na ominięcie proxy dla wybranych domen przez serwowanie plików z dysku.
+        """
+        # Domeny, które chcemy przechwytywać (CDN-y, które często są blokowane)
+        intercept_domains = [
+            "s81c.com", "ibm.com", "cloudflare.com", 
+            "jsdelivr.net", "newrelic.com", "githubusercontent.com"
+        ]
+
+        # Upewnij się, że katalog istnieje
+        self.local_assets_dir.mkdir(exist_ok=True, parents=True)
+
+        def _routing_handler(route):
+            url = route.request.url
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+            
+            if not hostname:
+                route.continue_()
+                return
+
+            # Sprawdź czy domena jest na liście do przechwycenia
+            match = False
+            for d in intercept_domains:
+                if d in hostname:
+                    match = True
+                    break
+            
+            if not match:
+                route.continue_()
+                return
+
+            # Ścieżka lokalna: local_assets/{hostname}/{path}
+            # Usuwamy początkowy slash z path (urlparse.path zaczyna się od /)
+            rel_path = parsed.path.lstrip("/")
+            local_path = self.local_assets_dir / hostname / rel_path
+            
+            if local_path.exists() and local_path.is_file():
+                log.info("[LOCAL INJECT] Serwowanie z dysku: %s", url)
+                route.fulfill(path=str(local_path))
+            else:
+                # Brak pliku lokalnie — kontynuuj przez sieć
+                route.continue_()
+
+        try:
+            # Rejestrujemy router dla wszystkich domen
+            # Playwright pozwala na wiele handlerów route, będą sprawdzane po kolei.
+            self.context.route("**/*", _routing_handler)
+            log.info("Aktywowano Local Asset Injection (katalog: %s)", self.local_assets_dir)
+        except Exception as e:
+            log.warning("Nie udalo sie ustawic Local Asset Injection: %s", e)
 
     def _inject_stealth_js(self):
         """Wstrzykuje JS ukrywający ślady automatyzacji (via add_init_script)."""
@@ -609,6 +667,10 @@ class IBMOpenSSHDownloader:
         if ibm_core_failed:
             log.error("CRITICAL: Nie udalo sie zaladowac IBMCore (www.js). Strona IBM nie bedzie dzialac!")
             log.error("To najczesciej oznacza blokade domeny *.s81c.com lub brak autoryzacji proxy (407).")
+            log.error("ROZWIAZANIE (Local Asset Injection):")
+            log.error("  1. Pobierz plik: https://1.www.s81c.com/common/v18/js/www.js")
+            log.error("  2. Umiesc go w: %s/1.www.s81c.com/common/v18/js/www.js", self.local_assets_dir)
+            log.error("  3. Skrypt automatycznie wykryje plik i ominie proxy.")
         
         log.error("--------------------------------------")
         # Wyczyść listę po raporcie
