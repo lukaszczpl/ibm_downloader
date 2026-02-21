@@ -263,6 +263,8 @@ class IBMOpenSSHDownloader:
             "--disable-font-subpixel-positioning",  # mitigacja Skia font crash (FATAL)
             "--disable-features=SkiaFontService,FontationBackend", # wymuś stary mechanizm fontów
             "--disable-remote-fonts",       # blokuj ładowanie czcionek z sieci
+            "--disk-cache-size=1",          # minimalizuj cache na dysku
+            "--media-cache-size=1",
             # --- Profil ---
             # Przenośność profilu między platformami (Windows ↔ Linux):
             # Cookies w plaintext SQLite zamiast szyfrowania DPAPI/keyring
@@ -312,7 +314,9 @@ class IBMOpenSSHDownloader:
         # Na Linuxie (często serwerowym np. /u01) sandbox sprawia najwięcej problemów
         if os.name != 'nt':
             chromium_args.append("--no-sandbox")
-            log.info("Dodano --no-sandbox (wymagane na Linux/server)")
+            # Przenieś cache do RAM aby uniknąć błędów I/O w /u01
+            chromium_args.append("--disk-cache-dir=/dev/shm")
+            log.info("Dodano --no-sandbox oraz --disk-cache-dir=/dev/shm (Linux/server optimization)")
 
         # ignore-certificate-errors: wymagane przy korporacyjnym proxy MITM / SSL inspection
         # Playwright ustawia ignore_https_errors=True tylko dla nawigacji, ale Chrome nadal
