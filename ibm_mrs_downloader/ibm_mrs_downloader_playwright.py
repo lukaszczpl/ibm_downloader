@@ -43,6 +43,7 @@ import argparse
 import configparser
 import logging
 from pathlib import Path
+import urllib.request
 from urllib.parse import urljoin, urlparse
 from typing import List, Optional, Set
 
@@ -151,6 +152,7 @@ class IBMOpenSSHDownloader:
         no_proxy_autodetect: bool = False,
         parallel_downloads: int = 3,
         use_headless_shell: bool = False,
+        limit: int = None,
         debug: bool = False,
     ):
         self.packages = packages or ["openssh"]
@@ -158,6 +160,7 @@ class IBMOpenSSHDownloader:
         self.profile_dir = profile_dir or str(Path.cwd() / ".chrome_profile")
         self.download_timeout = download_timeout
         self.parallel_downloads = max(1, parallel_downloads)
+        self.limit = limit
         self.debug = debug
         os.makedirs(self.base_download_dir, exist_ok=True)
         # self.download_dir bedzie ustawiany dynamicznie per pakiet
@@ -784,53 +787,139 @@ class IBMOpenSSHDownloader:
             return False
         return False
 
-    def _find_package_links(self) -> List[str]:
-        """Parsuje strone i znajduje linki do pakietow."""
+    @staticmethod
+    def _get_version_sort_key(url: str) -> List:
+        """Klucz sortujacy do naturalnego sortowania wersji z URL (np. '9.6', '4.15.1.1007')."""
+        try:
+            filename = urlparse(url).path.split("/")[-1]
+            # Szukaj ciagow cyfr oddzielonych kropkami
+            version_match = re.search(r'(\d+(?:\.\d+)+)', filename)
+            if version_match:
+                version_str = version_match.group(1)
+                # Zamien na liste intow dla poprawnego porównywania (natural sort)
+                return [int(part) for part in version_str.split(".")]
+        except Exception:
+            pass
+        return [0]
+
+    def _find_package_links(self, aix_version_filter: str = None, pkg_name: str = None) -> List[str]:
+        """
+        Parsuje strone i znajduje linki do pakietow.
+        Jesli podano aix_version_filter (np. '7.3'), zwraca tylko te linki, ktore:
+        1. Znajduja sie pod naglowkiem "group" zawierajacym ta wersje.
+        2. LUB (heurystyka) ich wersja pakietu sugeruje dany system:
+           - .1xxx -> AIX 7.1 / 7.2
+           - .2xxx -> AIX 7.3
+           
+        Dodatkowo dla OpenSSL pomija wersje "with FIPS" oraz te, ktore w nazwie/URL
+        maja "fips" lub wersje zaczynajaca sie od "20.".
+        """
         package_urls: Set[str] = set()
         current_url = self.page.url
 
-        # Metoda 1: przez elementy DOM (Playwright query) – szukaj klasy ibm-download-link
+        # Helper do heurystyki wersji AIX
+        def matches_aix_heuristic(url: str, filter_val: str) -> bool:
+            if not filter_val: return True
+            f_clean = filter_val.replace(".", "") # '7.1' -> '71'
+            filename = urlparse(url).path.split("/")[-1]
+            parts = filename.split(".")
+            if len(parts) < 2: return False
+            
+            last_segment = ""
+            for p in reversed(parts):
+                if p.isdigit() and len(p) >= 4:
+                    last_segment = p
+                    break
+            
+            if not last_segment: return False
+            
+            first_digit = last_segment[0]
+            if first_digit == '1' and ('71' in f_clean or '72' in f_clean):
+                return True
+            if first_digit == '2' and '73' in f_clean:
+                return True
+            return False
+
+        # Helper dla OpenSSL FIPS
+        def is_forbidden_fips(url: str, row_txt: str = "") -> bool:
+            if not pkg_name or "openssl" not in pkg_name.lower():
+                return False
+            
+            u_lower = url.lower()
+            row_txt_lower = row_txt.lower() if row_txt else ""
+
+            # 1. Wyraźne "fips" w nazwie pliku / URL lub tekście wiersza
+            if "fips" in u_lower or "with fips" in row_txt_lower:
+                return True
+            
+            # 2. Blokada wersji "20." (np. openssl-fips-20.x...)
+            # Szukamy vzorca "20." po myślniku lub kropce
+            if re.search(r'[-.]20\.', u_lower):
+                return True
+                
+            return False
+
+        # Metoda 1: Przez tabelę i grupy (najbardziej precyzyjne)
         try:
-            # Szukaj linków z klasą ibm-download-link (najpewniejsze)
-            links = self.page.query_selector_all("a.ibm-download-link")
-            for link in links:
-                try:
+            rows = self.page.query_selector_all("#table1 tr")
+            current_group_text = ""
+            
+            for row in rows:
+                class_attr = row.get_attribute("class") or ""
+                row_text = row.inner_text()
+                
+                # Szybki check row_text dla OpenSSL
+                if pkg_name and "openssl" in pkg_name.lower() and "with fips" in row_text.lower():
+                    continue
+
+                if "group" in class_attr:
+                    group_text = row_text.strip()
+                    if group_text:
+                        current_group_text = group_text
+                    continue
+                
+                links = row.query_selector_all("a.ibm-download-link") or row.query_selector_all("a")
+                for link in links:
                     href = link.get_attribute("href")
                     if href:
                         full_url = urljoin(current_url, href)
                         if self._is_valid_package_url(full_url):
-                            package_urls.add(full_url)
-                except Exception:
-                    continue
-            
-            # Jeśli nic nie znaleziono, szukaj wszystkich linków kończących się rozszerzeniami
-            if not package_urls:
-                links = self.page.query_selector_all("a")
-                for link in links:
-                    try:
-                        href = link.get_attribute("href")
-                        if not href: continue
-                        h_lower = href.lower()
-                        if any(ext in h_lower for ext in [".tar.z", ".rpm", ".rte", ".bff", ".tar.gz"]):
-                            full_url = urljoin(current_url, href)
-                            if self._is_valid_package_url(full_url):
-                                package_urls.add(full_url)
-                    except Exception:
-                        continue
-        except Exception:
-            pass
+                            # Agresywny check FIPS dla OpenSSL
+                            if is_forbidden_fips(full_url, row_text):
+                                log.debug(f"Pominieto (FIPS): {full_url}")
+                                continue
 
-        # Metoda 2: regex na page source (backup)
-        try:
-            page_source = self.page.content()
-            # Szukaj linków w href
-            pattern = r'href=["\']([^"\'<>\s]+?(?:\.tar\.Z|\.rpm|\.rte|\.bff|\.tar\.gz))["\']'
-            for match in re.findall(pattern, page_source, re.IGNORECASE):
-                full_url = urljoin(current_url, match)
-                if self._is_valid_package_url(full_url):
-                    package_urls.add(full_url)
-        except Exception:
-            pass
+                            matched = False
+                            if not aix_version_filter:
+                                matched = True
+                            else:
+                                if current_group_text and aix_version_filter.lower() in current_group_text.lower():
+                                    matched = True
+                                elif matches_aix_heuristic(full_url, aix_version_filter):
+                                    matched = True
+                            
+                            if matched:
+                                package_urls.add(full_url)
+        except Exception as e:
+            log.debug(f"Blad podczas parsowania struktury tabeli: {e}")
+
+        # Metoda 2: Fallback (ogólny)
+        if not package_urls:
+            try:
+                links = self.page.query_selector_all("a.ibm-download-link") or self.page.query_selector_all("a")
+                for link in links:
+                    href = link.get_attribute("href")
+                    if href:
+                        full_url = urljoin(current_url, href)
+                        if self._is_valid_package_url(full_url):
+                            if is_forbidden_fips(full_url):
+                                continue
+                            if not aix_version_filter or matches_aix_heuristic(full_url, aix_version_filter):
+                                package_urls.add(full_url)
+            except Exception:
+                pass
+
+        return list(package_urls)
 
         return list(package_urls)
 
@@ -925,7 +1014,15 @@ class IBMOpenSSHDownloader:
                 download_page.on("console", lambda msg: None)
                 download_page.on("pageerror", lambda err: None)
 
-                # Oczekuj na download event – Chrome pobiera .tar.Z jako plik
+                # Dla plików tekstowych i podpisów używamy natywnego pobierania (omija błędy parsowania w Chromium)
+                if filename.lower().endswith((".txt", ".sig")):
+                    if self._download_native(url, filepath):
+                        return True
+                    else:
+                        if attempt < 3: time.sleep(5 * attempt)
+                        continue
+
+                # Oczekuj na download event – dla plików binarnych (np. .tar.Z)
                 with download_page.expect_download(
                     timeout=self.download_timeout * 1000
                 ) as download_info:
@@ -1027,6 +1124,18 @@ class IBMOpenSSHDownloader:
             filename = urlparse(url).path.split("/")[-1]
             filepath = Path(self.download_dir) / filename
 
+            # Dla plików tekstowych/podpisów używamy natywnego pobierania (omija błędy parsowania w Chromium)
+            if filename.lower().endswith((".txt", ".sig")):
+                log.info("Pobieranie NATIVE: %s", filename)
+                if self._download_native(url, filepath):
+                    # Symulujemy pomyślne pobranie by Faza 2 je zaliczyła
+                    download_holder = {"download": "API_SUCCESS", "filepath": filepath}
+                    pending.append((download_holder, filepath, filename, None))
+                    continue
+                else:
+                    log.error("Blad natywnego pobierania dla %s", filename)
+                continue
+
             page = self.context.new_page()
             page.on("console", lambda msg: None)
             page.on("pageerror", lambda err: None)
@@ -1040,7 +1149,9 @@ class IBMOpenSSHDownloader:
 
             page.on("download", on_download)
 
+            # Inicjuje: Chrome pobiera w tle
             log.info("Inicjuje: %s", filename)
+            
             try:
                 page.goto(url, wait_until="commit", timeout=60000)
             except Exception as nav_err:
@@ -1056,6 +1167,13 @@ class IBMOpenSSHDownloader:
                 download = holder["download"]
                 if download is None:
                     log.error("Brak download event dla: %s", filename)
+                    continue
+
+                if download == "API_SUCCESS":
+                    # Plik zapisany już w Fazie 1 przez API
+                    size_mb = filepath.stat().st_size / (1024 * 1024)
+                    log.info("OK: %s (%.2f MB)", filename, size_mb)
+                    downloaded += 1
                     continue
 
                 # save_as() blokuje az Chrome skonczy pobieranie
@@ -1320,6 +1438,51 @@ class IBMOpenSSHDownloader:
             self._save_diagnostic_screenshot("verification_error")
 
     # -----------------------------------------------------------------------
+    # Natywny downloader (urllib) — dla plików z wadliwymi nagłówkami
+    # -----------------------------------------------------------------------
+    def _download_native(self, url: str, filepath: Path) -> bool:
+        """Pobiera plik przy użyciu urllib.request, przenosząc ciasteczka z Playwright."""
+        try:
+            # Pobierz ciasteczka z aktualnego kontekstu
+            playwright_cookies = self.context.cookies()
+            cookie_header = "; ".join([f"{c['name']}={c['value']}" for c in playwright_cookies])
+
+            # Konfiguracja requestu
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", _USER_AGENT)
+            req.add_header("Cookie", cookie_header)
+            
+            # Obsługa proxy
+            handlers = []
+            if self.proxy:
+                proxy_handler = urllib.request.ProxyHandler({'http': self.proxy, 'https': self.proxy})
+                handlers.append(proxy_handler)
+            
+            # Opcjonalne ignorowanie błędów SSL dla korporacji
+            if self.corp_ca:
+                import ssl
+                ctx = ssl.create_default_context(cafile=self.corp_ca)
+                handlers.append(urllib.request.HTTPSHandler(context=ctx))
+            elif os.environ.get("PYTHONHTTPSVERIFY") == "0":
+                import ssl
+                ctx = ssl._create_unverified_context()
+                handlers.append(urllib.request.HTTPSHandler(context=ctx))
+
+            opener = urllib.request.build_opener(*handlers)
+            
+            with opener.open(req, timeout=self.download_timeout) as response:
+                with open(filepath, "wb") as f:
+                    f.write(response.read())
+            
+            size_mb = filepath.stat().st_size / (1024 * 1024)
+            log.info("OK (NATIVE): %s (%.2f MB)", filepath.name, size_mb)
+            return True
+
+        except Exception as e:
+            log.debug(f"Blad _download_native dla {url}: {e}")
+            return False
+
+    # -----------------------------------------------------------------------
     # Sprawdzenie aktywnej sesji
     # -----------------------------------------------------------------------
     def _check_session_active(self, timeout: int = 30) -> bool:
@@ -1413,6 +1576,7 @@ class IBMOpenSSHDownloader:
         version_filter: str = None,
         credentials_file: str = None,
         export_urls: bool = False,
+        aix_version: str = None,
     ):
         """Glowna metoda – headless (batch mode)."""
         log.info("=" * 60)
@@ -1499,7 +1663,32 @@ class IBMOpenSSHDownloader:
                 log.info(f"SYNCHRONIZACJA PAKIETU: {pkg}")
                 log.info("-" * 60)
 
-                tar_z_urls = self._find_package_links()
+                package_urls = self._find_package_links(aix_version_filter=aix_version, pkg_name=pkg)
+
+                # Filtrowanie wersji przed eksportem/pobieraniem (filtr tekstowy)
+                if version_filter:
+                    package_urls = [u for u in package_urls if version_filter.lower() in u.lower()]
+
+                # Grupowanie URL-i według wersji (aby sig/txt/tar.Z z tej samej wersji liczyły się jako 1)
+                version_groups = {}
+                for u in package_urls:
+                    v_key = tuple(self._get_version_sort_key(u))
+                    if v_key not in version_groups:
+                        version_groups[v_key] = []
+                    version_groups[v_key].append(u)
+
+                # Posortuj wersje (klucze) od NAJNOWSZEJ
+                sorted_versions = sorted(version_groups.keys(), reverse=True)
+
+                # Nałożenie limitu na WERSJE
+                if self.limit and self.limit > 0:
+                    sorted_versions = sorted_versions[:self.limit]
+                    log.info(f"Ograniczono liste do {len(sorted_versions)} najnowszych wersji (limit: {self.limit})")
+
+                # Spłaszcz z powrotem do listy URL-i
+                package_urls = []
+                for v in sorted_versions:
+                    package_urls.extend(version_groups[v])
 
                 # Eksport URL-i jeśli wybrano tę opcję
                 if export_urls:
@@ -1507,24 +1696,19 @@ class IBMOpenSSHDownloader:
                     urls_dir.mkdir(exist_ok=True)
                     export_file = urls_dir / f"{pkg}.txt"
                     
-                    # Filtrowanie wersji przed eksportem jeśli filtr jest ustawiony
-                    urls_to_export = tar_z_urls
-                    if version_filter:
-                        urls_to_export = [u for u in tar_z_urls if version_filter.lower() in u.lower()]
-                    
                     with open(export_file, "w", encoding="utf-8") as f:
-                        for url in sorted(urls_to_export):
+                        for url in sorted(package_urls): # Tu sortujemy alfabetycznie dla czytelności pliku
                             f.write(url + "\n")
-                    log.info(f"Wyeksportowano {len(urls_to_export)} URL-i do: {export_file}")
+                    log.info(f"Wyeksportowano {len(package_urls)} URL-i do: {export_file}")
                     # W trybie eksportu nie pobieramy plików
                     continue
 
-                if not tar_z_urls:
+                if not package_urls:
                     log.warning(f"Nie znaleziono plikow dla pakietu {pkg}")
                     continue
 
-                # Filtrowanie wersji i pobieranie
-                self._download_all_packages(tar_z_urls, version_filter=version_filter)
+                # Pobieranie
+                self._download_all_packages(package_urls)
             log.info("=" * 60)
             log.info("ZAKONCZONO!")
             log.info("=" * 60)
@@ -1851,6 +2035,13 @@ Format pliku credentials.ini:
         help="Eksportuj znalezione URL-e do plikow w katalogu 'urls/' (bez pobierania). Nazwy plikow: {pakiet}.txt",
         default=False,
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit liczby pobieranych/eksportowanych wersji per pakiet (pobiera najnowsze)",
+        default=None
+    )
+    parser.add_argument("--aix-version", help="Filtruj pakiety wedlug wersji AIX (np. '7.1', '7.3')", default=None)
 
     args = parser.parse_args()
 
@@ -1877,6 +2068,7 @@ Format pliku credentials.ini:
         no_proxy_autodetect=args.no_proxy_autodetect,
         parallel_downloads=args.parallel,
         use_headless_shell=args.headless_shell,
+        limit=args.limit,
         debug=getattr(args, 'debug', False),
     )
 
@@ -1886,6 +2078,7 @@ Format pliku credentials.ini:
             version_filter=args.version,
             credentials_file=args.auto_login,
             export_urls=args.export_urls,
+            aix_version=args.aix_version,
         )
     else:
         # Tryb interaktywny (widoczna przegladarka)
