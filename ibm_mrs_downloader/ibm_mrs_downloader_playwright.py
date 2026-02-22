@@ -132,12 +132,16 @@ atexit.register(_emergency_cleanup)
 
 
 class IBMOpenSSHDownloader:
-    """Klasa do pobierania pakietow OpenSSH ze strony IBM (Playwright, pipe mode)."""
+    """Klasa do pobierania pakietow z MRS ze strony IBM (Playwright, pipe mode)."""
 
-    IBM_URL = "https://www.ibm.com/resources/mrs/assets?source=aixbp&S_PKG=openssh"
+    # URL bazowy z pakietem jako zmienną
+    IBM_URL_TEMPLATE = "https://www.ibm.com/resources/mrs/assets?source=aixbp&S_PKG={package}"
+    # Domyslne pakiety
+    DEFAULT_PACKAGES = ["openssh", "openssl", "rpm"]
 
     def __init__(
         self,
+        packages: List[str] = None,
         download_dir: str = None,
         profile_dir: str = None,
         proxy: str = None,
@@ -149,12 +153,15 @@ class IBMOpenSSHDownloader:
         use_headless_shell: bool = False,
         debug: bool = False,
     ):
-        self.download_dir = download_dir or str(Path.cwd() / "downloads")
+        self.packages = packages or ["openssh"]
+        self.base_download_dir = download_dir or str(Path.cwd() / "downloads")
         self.profile_dir = profile_dir or str(Path.cwd() / ".chrome_profile")
         self.download_timeout = download_timeout
         self.parallel_downloads = max(1, parallel_downloads)
         self.debug = debug
-        os.makedirs(self.download_dir, exist_ok=True)
+        os.makedirs(self.base_download_dir, exist_ok=True)
+        # self.download_dir bedzie ustawiany dynamicznie per pakiet
+        self.download_dir = self.base_download_dir
 
         self.playwright_instance = None
         self.context: Optional[BrowserContext] = None
@@ -743,10 +750,10 @@ class IBMOpenSSHDownloader:
     # Parsowanie linków
     # -----------------------------------------------------------------------
     @staticmethod
-    def _is_valid_tar_z_url(url: str) -> bool:
-        """Sprawdza czy URL wygląda na prawidłowy link do pliku .tar.Z."""
+    def _is_valid_package_url(url: str) -> bool:
+        """Sprawdza czy URL wygląda na prawidłowy link do pakietu."""
         # Odrzuć zbyt długie URL-e (URL-zakodowany HTML ze strony IBM)
-        if len(url) > 500:
+        if len(url) > 800:
             return False
         # Odrzuć URL-e zawierające fragmenty HTML (URL-encoded lub nie)
         if any(marker in url.lower() for marker in [
@@ -755,49 +762,77 @@ class IBMOpenSSHDownloader:
             "content=", "viewport",
         ]):
             return False
-        # Nazwa pliku musi wyglądać jak prawdziwa nazwa pliku
+        
+        # Ignoruj typowe zasoby webowe
+        if any(ext in url.lower() for ext in [".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff"]):
+            return False
+
+        # Nazwa pliku musi wyglądać sensownie
         try:
             filename = urlparse(url).path.split("/")[-1]
-            if not re.match(r'^[\w.\-]+\.tar\.Z$', filename, re.IGNORECASE):
+            if not filename:
                 return False
+            # Wspierane rozszerzenia: .tar.Z, .rte, .rpm, .bff, .tar.gz, .zip, .bin, lub pakiety z wersją
+            # IBM często podaje pliki bez klasycznego rozszerzenia na końcu (np. .1234)
+            if re.search(r'(\.tar\.Z|\.rte|\.rpm|\.bff|\.tar\.gz|\.zip|\.bin|\.\d+)$', filename, re.IGNORECASE):
+                return True
+            
+            # Jeśli link zawiera specyficzny wzorzec IBM Download Director / sdfdl
+            if "/sdfdl/" in url.lower() or "iwm.dhe.ibm.com" in url.lower():
+                return True
         except Exception:
             return False
-        return True
+        return False
 
-    def _find_tar_z_links(self) -> List[str]:
-        """Parsuje strone i znajduje linki do plikow .tar.Z"""
-        tar_z_urls: Set[str] = set()
+    def _find_package_links(self) -> List[str]:
+        """Parsuje strone i znajduje linki do pakietow."""
+        package_urls: Set[str] = set()
         current_url = self.page.url
 
-        # Metoda 1: przez elementy DOM (Playwright query) – preferowana
+        # Metoda 1: przez elementy DOM (Playwright query) – szukaj klasy ibm-download-link
         try:
-            links = self.page.query_selector_all("a")
+            # Szukaj linków z klasą ibm-download-link (najpewniejsze)
+            links = self.page.query_selector_all("a.ibm-download-link")
             for link in links:
                 try:
                     href = link.get_attribute("href")
-                    if href and href.lower().endswith(".tar.z"):
+                    if href:
                         full_url = urljoin(current_url, href)
-                        if self._is_valid_tar_z_url(full_url):
-                            tar_z_urls.add(full_url)
+                        if self._is_valid_package_url(full_url):
+                            package_urls.add(full_url)
                 except Exception:
                     continue
+            
+            # Jeśli nic nie znaleziono, szukaj wszystkich linków kończących się rozszerzeniami
+            if not package_urls:
+                links = self.page.query_selector_all("a")
+                for link in links:
+                    try:
+                        href = link.get_attribute("href")
+                        if not href: continue
+                        h_lower = href.lower()
+                        if any(ext in h_lower for ext in [".tar.z", ".rpm", ".rte", ".bff", ".tar.gz"]):
+                            full_url = urljoin(current_url, href)
+                            if self._is_valid_package_url(full_url):
+                                package_urls.add(full_url)
+                    except Exception:
+                        continue
         except Exception:
             pass
 
         # Metoda 2: regex na page source (backup)
-        # [^"'\s<>]+ : nie dopuszczaj cudzysłowów, spacji ani tagów HTML
-        # — zapobiega łapaniu URL-zakodowanego HTML ze strony IBM
         try:
             page_source = self.page.content()
-            pattern = r'href=["\']([^"\'<>\s]+\.tar\.Z)["\']'
+            # Szukaj linków w href
+            pattern = r'href=["\']([^"\'<>\s]+?(?:\.tar\.Z|\.rpm|\.rte|\.bff|\.tar\.gz))["\']'
             for match in re.findall(pattern, page_source, re.IGNORECASE):
                 full_url = urljoin(current_url, match)
-                if self._is_valid_tar_z_url(full_url):
-                    tar_z_urls.add(full_url)
+                if self._is_valid_package_url(full_url):
+                    package_urls.add(full_url)
         except Exception:
             pass
 
-        return list(tar_z_urls)
+        return list(package_urls)
 
     # -----------------------------------------------------------------------
     # Oczekiwanie na stronę z pakietami
@@ -815,10 +850,11 @@ class IBMOpenSSHDownloader:
             if self.debug and elapsed % 30 == 0:
                 self._capture_debug_state(f"packages_page_wait_{elapsed}s")
 
-            # Sprawdź CAPTCHA
             try:
                 content = self.page.content()
                 content_lower = content.lower()
+                
+                # Sprawdź CAPTCHA
                 if "captcha" in content_lower:
                     log.warning("[%ds] Wykryto CAPTCHA! Wymagana interwencja.", elapsed)
 
@@ -832,13 +868,19 @@ class IBMOpenSSHDownloader:
                     # Zresetuj timeout po wpisaniu kodu
                     start_time = time.time()
                     continue
+                
+                # Wskaźniki załadowania strony z zasobami (zalogowany)
+                if "#table1" in content or "dhtable" in content or "aix web download pack" in content_lower:
+                    log.info("Wykryto strone z zasobami (zalogowany).")
+                    return True
+
             except Exception:
                 pass
 
-            # Sprawdź linki
-            tar_z_links = self._find_tar_z_links()
-            if tar_z_links:
-                log.info("Znaleziono %d plik(ow) .tar.Z po %ds", len(tar_z_links), elapsed)
+            # Sprawdź linki bezpośrednio
+            package_links = self._find_package_links()
+            if package_links:
+                log.info("Znaleziono %d plik(ow) po %ds", len(package_links), elapsed)
                 return True
 
             try:
@@ -852,7 +894,7 @@ class IBMOpenSSHDownloader:
 
             time.sleep(2)
 
-        log.warning("Nie znaleziono pakietow w ciagu %ds", timeout)
+        log.warning("Nie znaleziono pakietow ani wskaźników sesji w ciagu %ds", timeout)
         return False
 
     # -----------------------------------------------------------------------
@@ -929,8 +971,8 @@ class IBMOpenSSHDownloader:
     # -----------------------------------------------------------------------
     # Pobieranie wszystkich plików
     # -----------------------------------------------------------------------
-    def _download_all_tar_z(self, urls: List[str], version_filter: str = None) -> int:
-        """Pobiera wszystkie pliki .tar.Z z podanych URL-i (rownolegle w batach)."""
+    def _download_all_packages(self, urls: List[str], version_filter: str = None) -> int:
+        """Pobiera wszystkie pliki z podanych URL-i (rownolegle w batach)."""
         if not urls:
             log.warning("Brak plikow do pobrania")
             return 0
@@ -1281,12 +1323,21 @@ class IBMOpenSSHDownloader:
     # Sprawdzenie aktywnej sesji
     # -----------------------------------------------------------------------
     def _check_session_active(self, timeout: int = 30) -> bool:
-        """Sprawdza czy sesja jest aktywna (widoczne pakiety)."""
+        """Sprawdza czy sesja jest aktywna (widoczne pakiety lub wskaźniki strony)."""
         log.info("Sprawdzanie aktywnej sesji (max %ds)...", timeout)
         start_time = time.time()
         while time.time() - start_time < timeout:
-            if self._find_tar_z_links():
-                log.info("Wykryto aktywna sesje i pliki.")
+            try:
+                content = self.page.content().lower()
+                # Wskaźniki strony z zasobami
+                if "table1" in content or "dhtable" in content or "aix web download pack" in content:
+                    log.info("Wykryto aktywna sesje (wskaźniki HTML).")
+                    return True
+            except Exception:
+                pass
+
+            if self._find_package_links():
+                log.info("Wykryto aktywna sesje i pliki do pobrania.")
                 return True
             time.sleep(2)
         return False
@@ -1309,8 +1360,13 @@ class IBMOpenSSHDownloader:
             self._screenshot_counter = 0
 
             # Nawigacja z retry — "Page crashed" może być spowodowane uszkodzonym profilem
+            # Używamy pierwszego pakietu do inicjalizacji sesji w trybie interaktywnym
+            first_pkg = self.packages[0] if self.packages else "openssh"
+            target_url = self.IBM_URL_TEMPLATE.format(package=first_pkg)
+
+            # Nawigacja z retry — "Page crashed" może być spowodowane uszkodzonym profilem
             try:
-                self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+                self.page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
             except Exception as goto_err:
                 if "Page crashed" in str(goto_err) or "Target closed" in str(goto_err):
                     log.warning("Strona ulegla awarii — usuwam profil i ponawiam...")
@@ -1323,7 +1379,7 @@ class IBMOpenSSHDownloader:
                     self._cleaned_up = False
                     self._setup_browser(headless=False)
                     self._screenshot_counter = 0
-                    self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+                    self.page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
                 else:
                     raise
 
@@ -1356,7 +1412,7 @@ class IBMOpenSSHDownloader:
         self,
         version_filter: str = None,
         credentials_file: str = None,
-        export_urls: str = None,
+        export_urls: bool = False,
     ):
         """Glowna metoda – headless (batch mode)."""
         log.info("=" * 60)
@@ -1367,108 +1423,110 @@ class IBMOpenSSHDownloader:
             self._setup_browser(headless=True)
             self._screenshot_counter = 0  # Reset licznika screenshotów
 
-            # Nawigacja z retry — "Page crashed" może być spowodowane uszkodzonym profilem
-            try:
-                self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
-            except Exception as goto_err:
-                if "Page crashed" in str(goto_err) or "Target closed" in str(goto_err):
-                    log.warning("Strona ulegla awarii — usuwam profil i ponawiam...")
-                    self._cleanup()
-                    import shutil
-                    if os.path.exists(self.profile_dir):
-                        shutil.rmtree(self.profile_dir, ignore_errors=True)
-                        log.info("Usunieto uszkodzony profil: %s", self.profile_dir)
-                    self._cleaned_up = False
-                    self._setup_browser(headless=True)
-                    self._screenshot_counter = 0
-                    self.page.goto(self.IBM_URL, wait_until="domcontentloaded", timeout=60000)
+            # --- Pętla po pakietach ---
+            first_run = True
+            for pkg in self.packages:
+                log.info("=" * 60)
+                log.info(f"PRZETWARZANIE PAKIETU: {pkg}")
+                log.info("=" * 60)
+
+                # Ustaw katalog pobierania dla pakietu
+                self.download_dir = str(Path(self.base_download_dir) / pkg)
+                os.makedirs(self.download_dir, exist_ok=True)
+
+                target_url = self.IBM_URL_TEMPLATE.format(package=pkg)
+                
+                # Nawigacja do konkretnego pakietu
+                try:
+                    self.page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+                except Exception as e:
+                    log.error(f"Nie udalo sie przejsc do pakietu {pkg}: {e}")
+                    continue
+
+                if first_run:
+                    self._save_diagnostic_screenshot("page_loaded")
+
+                    # Sprawdź czy sesja z profilu jest aktywna
+                    session_active = self._check_session_active(timeout=30)
+                    self._save_diagnostic_screenshot("session_check")
+
+                    if not session_active:
+                        if not credentials_file:
+                            log.error("Brak aktywnej sesji i brak pliku credentials.")
+                            log.error("Uzyj: --auto-login credentials.ini")
+                            return
+
+                        # Wczytaj dane logowania
+                        config = configparser.ConfigParser()
+                        config.read(credentials_file)
+
+                        if "ibm" in config:
+                            email = config["ibm"].get("email", "")
+                            password = config["ibm"].get("password", "")
+                            if email and password:
+                                self._auto_login_ibm(email, password)
+                            else:
+                                log.error("Brak email/password w sekcji [ibm]")
+                                return
+                        elif "google" in config:
+                            email = config["google"].get("email", "")
+                            password = config["google"].get("password", "")
+                            if email and password:
+                                self._auto_login_google(email, password)
+                            else:
+                                log.error("Brak email/password w sekcji [google]")
+                                return
+                        else:
+                            log.error("Brak sekcji [ibm] lub [google] w pliku credentials")
+                            return
+
+                        # Czekaj na stronę z pakietami po logowaniu
+                        if not self._wait_for_packages_page(timeout=120):
+                            log.error("Nie udalo sie wykryc strony z pakietami")
+                            log.error("Mozliwe przyczyny: 2FA, CAPTCHA, blad logowania")
+                            self._save_diagnostic_screenshot("login_failed")
+                            return
+                    
+                    first_run = False
                 else:
-                    raise
+                    # Dla kolejnych pakietów upewnij się, że strona się zaladowala
+                    if not self._wait_for_packages_page(timeout=30):
+                        log.warning(f"Ostrzeżenie: Strona pakietu {pkg} nie zaladowala sie poprawnie.")
 
-            self._save_diagnostic_screenshot("page_loaded")
+                # Pobieranie
+                self._save_diagnostic_screenshot(f"packages_page_{pkg}")
+                log.info("-" * 60)
+                log.info(f"SYNCHRONIZACJA PAKIETU: {pkg}")
+                log.info("-" * 60)
 
-            # Sprawdź czy sesja z profilu jest aktywna
-            session_active = self._check_session_active(timeout=30)
-            self._save_diagnostic_screenshot("session_check")
+                tar_z_urls = self._find_package_links()
 
-            if not session_active:
-                if not credentials_file:
-                    log.error("Brak aktywnej sesji i brak pliku credentials.")
-                    log.error("Uzyj: --auto-login credentials.ini")
-                    return
-
-                # Wczytaj dane logowania
-                config = configparser.ConfigParser()
-                config.read(credentials_file)
-
-                if "ibm" in config:
-                    email = config["ibm"].get("email", "")
-                    password = config["ibm"].get("password", "")
-                    if email and password:
-                        self._auto_login_ibm(email, password)
-                    else:
-                        log.error("Brak email/password w sekcji [ibm]")
-                        return
-                elif "google" in config:
-                    email = config["google"].get("email", "")
-                    password = config["google"].get("password", "")
-                    if email and password:
-                        self._auto_login_google(email, password)
-                    else:
-                        log.error("Brak email/password w sekcji [google]")
-                        return
-                else:
-                    log.error("Brak sekcji [ibm] lub [google] w pliku credentials")
-                    return
-
-                # Czekaj na stronę z pakietami po logowaniu
-                if not self._wait_for_packages_page(timeout=120):
-                    log.error("Nie udalo sie wykryc strony z pakietami")
-                    log.error("Mozliwe przyczyny: 2FA, CAPTCHA, blad logowania")
-                    # Zrzut ekranu diagnostyczny
-                    self._save_diagnostic_screenshot("login_failed")
-                    return
-
-            # Pobieranie
-            self._save_diagnostic_screenshot("packages_page")
-            log.info("-" * 60)
-            log.info("AUTOMATYCZNE POBIERANIE")
-            log.info("-" * 60)
-
-            tar_z_urls = self._find_tar_z_links()
-
-            # Filtrowanie wersji
-            if tar_z_urls and version_filter:
-                tar_z_urls = [u for u in tar_z_urls if version_filter.lower() in u.lower()]
-                log.info("Po filtrze wersji '%s': %d plik(ow)", version_filter, len(tar_z_urls))
-
-            if tar_z_urls:
-                log.info("Znalezione pliki:")
-                for url in sorted(tar_z_urls):
-                    filename = urlparse(url).path.split("/")[-1]
-                    log.info("  - %s", filename)
-
-                # --export-urls: zapisz URL-e do pliku i zakoncz (bez pobierania)
+                # Eksport URL-i jeśli wybrano tę opcję
                 if export_urls:
-                    try:
-                        urls_dir = Path(__file__).parent / "urls"
-                        urls_dir.mkdir(exist_ok=True)
-                        export_path = urls_dir / Path(export_urls).name
-                        with open(export_path, "w", encoding="utf-8") as f:
-                            for url in sorted(tar_z_urls):
-                                f.write(url + "\n")
-                        log.info("Wyeksportowano %d URL(i) do: %s", len(tar_z_urls), export_path)
-                    except Exception as e:
-                        log.error("Blad zapisu URL-i do pliku: %s", e)
-                else:
-                    downloaded = self._download_all_tar_z(tar_z_urls)
-                    log.info("Pobrano %d/%d plik(ow)", downloaded, len(tar_z_urls))
-            else:
-                log.warning("Strona zaladowana ale brak plikow .tar.Z")
-                self._save_diagnostic_screenshot("no_files_found")
+                    urls_dir = Path.cwd() / "urls"
+                    urls_dir.mkdir(exist_ok=True)
+                    export_file = urls_dir / f"{pkg}.txt"
+                    
+                    # Filtrowanie wersji przed eksportem jeśli filtr jest ustawiony
+                    urls_to_export = tar_z_urls
+                    if version_filter:
+                        urls_to_export = [u for u in tar_z_urls if version_filter.lower() in u.lower()]
+                    
+                    with open(export_file, "w", encoding="utf-8") as f:
+                        for url in sorted(urls_to_export):
+                            f.write(url + "\n")
+                    log.info(f"Wyeksportowano {len(urls_to_export)} URL-i do: {export_file}")
+                    # W trybie eksportu nie pobieramy plików
+                    continue
 
+                if not tar_z_urls:
+                    log.warning(f"Nie znaleziono plikow dla pakietu {pkg}")
+                    continue
+
+                # Filtrowanie wersji i pobieranie
+                self._download_all_packages(tar_z_urls, version_filter=version_filter)
             log.info("=" * 60)
-            log.info("ZAKONCZONO! Pliki: %s", self.download_dir)
+            log.info("ZAKONCZONO!")
             log.info("=" * 60)
 
         except KeyboardInterrupt:
@@ -1782,10 +1840,16 @@ Format pliku credentials.ini:
         help="Wlacz tryb debug: verbose logi Playwright + Chrome, logowanie zadan sieciowych, console.log ze stron",
     )
     parser.add_argument(
+        "-p", "--packages",
+        nargs="+",
+        help=f"Lista pakietow do pobrania (domyslnie: openssh). Dostepne np: {', '.join(IBMOpenSSHDownloader.DEFAULT_PACKAGES)}",
+        default=None
+    )
+    parser.add_argument(
         "--export-urls",
-        metavar="PLIK",
-        help="Eksportuj znalezione URL-e do pliku (bez pobierania). Np: --export-urls urls.txt",
-        default=None,
+        action="store_true",
+        help="Eksportuj znalezione URL-e do plikow w katalogu 'urls/' (bez pobierania). Nazwy plikow: {pakiet}.txt",
+        default=False,
     )
 
     args = parser.parse_args()
@@ -1797,7 +1861,13 @@ Format pliku credentials.ini:
         log.error("  playwright install chromium")
         sys.exit(1)
 
+    # Obsługa pakietów: z CLI lub domyślnie
+    pkgs = args.packages
+    if not pkgs:
+        pkgs = ["openssh"]
+
     downloader = IBMOpenSSHDownloader(
+        packages=pkgs,
         download_dir=args.download_dir,
         profile_dir=args.profile_dir,
         proxy=args.proxy,
