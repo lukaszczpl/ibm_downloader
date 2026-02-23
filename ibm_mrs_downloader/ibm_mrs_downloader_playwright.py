@@ -45,6 +45,7 @@ import logging
 from pathlib import Path
 import urllib.request
 from urllib.parse import urljoin, urlparse
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Set
 
 try:
@@ -150,7 +151,7 @@ class IBMOpenSSHDownloader:
         retries: int = 5,
         download_timeout: int = 300,
         no_proxy_autodetect: bool = False,
-        parallel_downloads: int = 3,
+        parallel_downloads: int = 1,
         use_headless_shell: bool = False,
         limit: int = None,
         debug: bool = False,
@@ -982,8 +983,12 @@ class IBMOpenSSHDownloader:
             try:
                 log.info("Pobieranie [%d/3]: %s", attempt, filename)
 
+                # Pobierz ciasteczka raz w głównym wątku (bezpieczne dla Playwright)
+                playwright_cookies = self.context.cookies()
+                cookie_header = "; ".join([f"{c['name']}={c['value']}" for c in playwright_cookies])
+
                 # Uzywamy natywnego pobierania dla WSZYSTKICH plików (omija błędy parsowania w Chromium)
-                if self._download_native(url, filepath):
+                if self._download_native(url, filepath, cookie_header):
                     return True
                 else:
                     log.warning("[%d/3] Blad natywnego pobierania dla %s", attempt, filename)
@@ -1054,21 +1059,28 @@ class IBMOpenSSHDownloader:
         return downloaded
 
     def _download_batch(self, urls: List[str]) -> int:
-        """Pobiera batch plikow rownolegle – Chrome pobiera N plikow jednoczesnie."""
-        # Pobieramy wszystkie pliki w tym batchu natywnie.
-        # (Chociaż urllib jest sekwencyjny, przy zepsutych nagłówkach IBM 
-        # tylko to zapewnia 100% stabilności zapisu na dysk).
+        """Pobiera batch plików równolegle przy użyciu ThreadPoolExecutor."""
+        # Pobieramy ciasteczka raz w głównym wątku przed uruchomieniem workerów
+        playwright_cookies = self.context.cookies()
+        cookie_header = "; ".join([f"{c['name']}={c['value']}" for c in playwright_cookies])
+
+        max_workers = len(urls)
         downloaded = 0
-        for url in urls:
-            filename = urlparse(url).path.split("/")[-1]
-            filepath = Path(self.download_dir) / filename
-
-            log.info("Pobieranie NATIVE: %s", filename)
-            if self._download_native(url, filepath):
-                downloaded += 1
-            else:
-                log.error("Blad natywnego pobierania dla %s", filename)
-
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Mapujemy pobieranie URL-i na wątki
+            futures = []
+            for url in urls:
+                filename = urlparse(url).path.split("/")[-1]
+                filepath = Path(self.download_dir) / filename
+                log.info("Inicjuje pobieranie (NATIVE): %s", filename)
+                futures.append(executor.submit(self._download_native, url, filepath, cookie_header))
+            
+            # Zliczamy sukcesy
+            for future in futures:
+                if future.result():
+                    downloaded += 1
+        
         return downloaded
 
     # -----------------------------------------------------------------------
@@ -1308,13 +1320,9 @@ class IBMOpenSSHDownloader:
     # -----------------------------------------------------------------------
     # Natywny downloader (urllib) — dla plików z wadliwymi nagłówkami
     # -----------------------------------------------------------------------
-    def _download_native(self, url: str, filepath: Path) -> bool:
-        """Pobiera plik przy użyciu urllib.request, przenosząc ciasteczka z Playwright."""
+    def _download_native(self, url: str, filepath: Path, cookie_header: str) -> bool:
+        """Pobiera plik przy użyciu urllib.request, używając przekazanych ciasteczek."""
         try:
-            # Pobierz ciasteczka z aktualnego kontekstu
-            playwright_cookies = self.context.cookies()
-            cookie_header = "; ".join([f"{c['name']}={c['value']}" for c in playwright_cookies])
-
             # Konfiguracja requestu
             req = urllib.request.Request(url)
             req.add_header("User-Agent", _USER_AGENT)
@@ -1880,7 +1888,7 @@ Format pliku credentials.ini:
     parser.add_argument("--no-proxy-autodetect", help="Wyłącz auto-wykrycie proxy z env", action="store_true")
     parser.add_argument("--retry", help="Liczba prob retry (domyslnie: 5)", type=int, default=5)
     parser.add_argument("--download-timeout", help="Timeout pobierania w sekundach (domyslnie: 300)", type=int, default=300)
-    parser.add_argument("--parallel", help="Liczba rownoczesnych pobieran (domyslnie: 3)", type=int, default=3)
+    parser.add_argument("--parallel", help="Liczba rownoczesnych pobieran (domyslnie: 1)", type=int, default=1)
     parser.add_argument(
         "--headless-shell",
         action="store_true",
