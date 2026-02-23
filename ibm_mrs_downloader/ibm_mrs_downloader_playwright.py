@@ -36,6 +36,7 @@ import os
 import signal
 import socket
 import subprocess
+import shutil
 import sys
 import time
 import re
@@ -176,10 +177,19 @@ class IBMOpenSSHDownloader:
         self.failed_resources = []  # Lista (url, status, type) zasobów z błędem
         self.local_assets_dir = Path(self.profile_dir).expanduser().resolve().parent / "local_assets"
 
+        # Przygotowanie katalogu .screenshot (czyszczenie przy każdym starcie)
+        debug_log_dir = Path(__file__).parent / ".screenshot"
+        if debug_log_dir.exists():
+            for item in debug_log_dir.iterdir():
+                try:
+                    if item.is_file(): item.unlink()
+                    elif item.is_dir(): shutil.rmtree(item)
+                except Exception:
+                    pass
+        debug_log_dir.mkdir(exist_ok=True)
+
         # Debug: verbose logi do pliku (.screenshot/playwright_debug.log)
         if self.debug:
-            debug_log_dir = Path(__file__).parent / ".screenshot"
-            debug_log_dir.mkdir(exist_ok=True)
             debug_log_file = debug_log_dir / "playwright_debug.log"
 
             # FileHandler: DEBUG+ z timestampem do pliku
