@@ -807,38 +807,9 @@ class IBMOpenSSHDownloader:
         Parsuje strone i znajduje linki do pakietow.
         Jesli podano aix_version_filter (np. '7.3'), zwraca tylko te linki, ktore:
         1. Znajduja sie pod naglowkiem "group" zawierajacym ta wersje.
-        2. LUB (heurystyka) ich wersja pakietu sugeruje dany system:
-           - .1xxx -> AIX 7.1 / 7.2
-           - .2xxx -> AIX 7.3
-           
-        Dodatkowo dla OpenSSL pomija wersje "with FIPS" oraz te, ktore w nazwie/URL
-        maja "fips" lub wersje zaczynajaca sie od "20.".
         """
         package_urls: Set[str] = set()
         current_url = self.page.url
-
-        # Helper do heurystyki wersji AIX
-        def matches_aix_heuristic(url: str, filter_val: str) -> bool:
-            if not filter_val: return True
-            f_clean = filter_val.replace(".", "") # '7.1' -> '71'
-            filename = urlparse(url).path.split("/")[-1]
-            parts = filename.split(".")
-            if len(parts) < 2: return False
-            
-            last_segment = ""
-            for p in reversed(parts):
-                if p.isdigit() and len(p) >= 4:
-                    last_segment = p
-                    break
-            
-            if not last_segment: return False
-            
-            first_digit = last_segment[0]
-            if first_digit == '1' and ('71' in f_clean or '72' in f_clean):
-                return True
-            if first_digit == '2' and '73' in f_clean:
-                return True
-            return False
 
         # Helper dla OpenSSL FIPS
         def is_forbidden_fips(url: str, row_txt: str = "") -> bool:
@@ -895,8 +866,6 @@ class IBMOpenSSHDownloader:
                             else:
                                 if current_group_text and aix_version_filter.lower() in current_group_text.lower():
                                     matched = True
-                                elif matches_aix_heuristic(full_url, aix_version_filter):
-                                    matched = True
                             
                             if matched:
                                 package_urls.add(full_url)
@@ -914,8 +883,12 @@ class IBMOpenSSHDownloader:
                         if self._is_valid_package_url(full_url):
                             if is_forbidden_fips(full_url):
                                 continue
-                            if not aix_version_filter or matches_aix_heuristic(full_url, aix_version_filter):
+                            # W fallbacku nie mamy naglowkow grup, wiec jesli filtr 
+                            # jest aktywny, ignorujemy wszystko by uniknac pobrania zlej wersji
+                            if not aix_version_filter:
                                 package_urls.add(full_url)
+                            else:
+                                log.debug(f"Pominieto w fallbacku (brak kontekstu AIX): {full_url}")
             except Exception:
                 pass
 
@@ -1009,46 +982,13 @@ class IBMOpenSSHDownloader:
             try:
                 log.info("Pobieranie [%d/3]: %s", attempt, filename)
 
-                # Nowa strona na każde pobieranie (nie zaburza głównej)
-                download_page = self.context.new_page()
-                download_page.on("console", lambda msg: None)
-                download_page.on("pageerror", lambda err: None)
-
-                # Dla plików tekstowych i podpisów używamy natywnego pobierania (omija błędy parsowania w Chromium)
-                if filename.lower().endswith((".txt", ".sig")):
-                    if self._download_native(url, filepath):
-                        return True
-                    else:
-                        if attempt < 3: time.sleep(5 * attempt)
-                        continue
-
-                # Oczekuj na download event – dla plików binarnych (np. .tar.Z)
-                with download_page.expect_download(
-                    timeout=self.download_timeout * 1000
-                ) as download_info:
-                    # goto() rzuca "Download is starting" gdy Chrome zaczyna
-                    # pobieranie zamiast ładowania strony – to oczekiwane zachowanie
-                    try:
-                        download_page.goto(url, wait_until="commit", timeout=60000)
-                    except Exception as nav_err:
-                        if "Download is starting" not in str(nav_err):
-                            raise  # prawdziwy błąd nawigacji
-
-                download = download_info.value
-
-                # Sprawdz blad pobierania
-                failure = download.failure()
-                if failure:
-                    log.warning("[%d/3] Blad pobierania %s: %s", attempt, filename, failure)
-                    if attempt < 3:
-                        time.sleep(5 * attempt)
+                # Uzywamy natywnego pobierania dla WSZYSTKICH plików (omija błędy parsowania w Chromium)
+                if self._download_native(url, filepath):
+                    return True
+                else:
+                    log.warning("[%d/3] Blad natywnego pobierania dla %s", attempt, filename)
+                    if attempt < 3: time.sleep(5 * attempt)
                     continue
-
-                # Zapisz plik do katalogu docelowego
-                download.save_as(str(filepath))
-                size_mb = filepath.stat().st_size / (1024 * 1024)
-                log.info("OK: %s (%.2f MB)", filename, size_mb)
-                return True
 
             except Exception as e:
                 err_msg = str(e).splitlines()[0] if str(e) else type(e).__name__
@@ -1115,91 +1055,19 @@ class IBMOpenSSHDownloader:
 
     def _download_batch(self, urls: List[str]) -> int:
         """Pobiera batch plikow rownolegle – Chrome pobiera N plikow jednoczesnie."""
-        pages = []
-        pending = []  # list of (download_holder, filepath, filename, page)
+        # Pobieramy wszystkie pliki w tym batchu natywnie.
+        # (Chociaż urllib jest sekwencyjny, przy zepsutych nagłówkach IBM 
+        # tylko to zapewnia 100% stabilności zapisu na dysk).
         downloaded = 0
-
-        # Faza 1: Otworz strony i zainicjuj pobieranie
         for url in urls:
             filename = urlparse(url).path.split("/")[-1]
             filepath = Path(self.download_dir) / filename
 
-            # Dla plików tekstowych/podpisów używamy natywnego pobierania (omija błędy parsowania w Chromium)
-            if filename.lower().endswith((".txt", ".sig")):
-                log.info("Pobieranie NATIVE: %s", filename)
-                if self._download_native(url, filepath):
-                    # Symulujemy pomyślne pobranie by Faza 2 je zaliczyła
-                    download_holder = {"download": "API_SUCCESS", "filepath": filepath}
-                    pending.append((download_holder, filepath, filename, None))
-                    continue
-                else:
-                    log.error("Blad natywnego pobierania dla %s", filename)
-                continue
-
-            page = self.context.new_page()
-            page.on("console", lambda msg: None)
-            page.on("pageerror", lambda err: None)
-            pages.append(page)
-
-            # Callback – Chrome wywola go gdy zacznie pobieranie
-            download_holder = {"download": None}
-
-            def on_download(dl, holder=download_holder):
-                holder["download"] = dl
-
-            page.on("download", on_download)
-
-            # Inicjuje: Chrome pobiera w tle
-            log.info("Inicjuje: %s", filename)
-            
-            try:
-                page.goto(url, wait_until="commit", timeout=60000)
-            except Exception as nav_err:
-                if "Download is starting" not in str(nav_err):
-                    log.error("Blad nawigacji %s: %s", filename, nav_err)
-                    continue
-            # Download zainicjowany – Chrome pobiera w tle
-            pending.append((download_holder, filepath, filename, page))
-
-        # Faza 2: Czekaj na zakonczenie pobran i zapisz pliki
-        for holder, filepath, filename, page in pending:
-            try:
-                download = holder["download"]
-                if download is None:
-                    log.error("Brak download event dla: %s", filename)
-                    continue
-
-                if download == "API_SUCCESS":
-                    # Plik zapisany już w Fazie 1 przez API
-                    size_mb = filepath.stat().st_size / (1024 * 1024)
-                    log.info("OK: %s (%.2f MB)", filename, size_mb)
-                    downloaded += 1
-                    continue
-
-                # save_as() blokuje az Chrome skonczy pobieranie
-                download.save_as(str(filepath))
-
-                failure = download.failure()
-                if failure:
-                    log.warning("Blad pobierania %s: %s", filename, failure)
-                    if filepath.exists():
-                        filepath.unlink()
-                    continue
-
-                size_mb = filepath.stat().st_size / (1024 * 1024)
-                log.info("OK: %s (%.2f MB)", filename, size_mb)
+            log.info("Pobieranie NATIVE: %s", filename)
+            if self._download_native(url, filepath):
                 downloaded += 1
-
-            except Exception as e:
-                err_msg = str(e).splitlines()[0] if str(e) else type(e).__name__
-                log.error("Blad pobierania %s: %s", filename, err_msg)
-
-        # Faza 3: Zamknij strony
-        for page in pages:
-            try:
-                page.close()
-            except Exception:
-                pass
+            else:
+                log.error("Blad natywnego pobierania dla %s", filename)
 
         return downloaded
 
