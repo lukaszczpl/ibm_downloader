@@ -405,19 +405,90 @@ def find_bff_files(directory):
     return result
 
 
-def build_output(source_dir, dest_dir):
+def _process_one_file(fpath, pkg_dest, SKIP_EXTS):
+    """
+    Przetwarza jeden plik źródłowy (BFF lub archiwum) i zwraca listę
+    wynikowych komunikatów (tag, opis). Wywoływane z wątku roboczego.
+    """
+    fname   = os.path.basename(fpath)
+    fname_l = fname.lower()
+    msgs    = []
+
+    if any(fname_l.endswith(ext) for ext in SKIP_EXTS):
+        return msgs   # sygnatura / suma kontrolna – pomijamy
+
+    # ── BFF: kopiuj i zmień nazwę ────────────────────────────────────────────
+    if is_bff_file(fpath):
+        info = get_bff_info(fpath)
+        if info and info['package'] != '(nieznana)' and info['vrmf'] != '(nieznana)':
+            new_name = f"{info['package']}.{info['vrmf']}"
+            dst      = os.path.join(pkg_dest, new_name)
+            if os.path.exists(dst):
+                msgs.append(f"    SKIP  (istnieje) {new_name}")
+            else:
+                shutil.copy2(fpath, dst)
+                msgs.append(f"    BFF   {fname:<45}  ->  {new_name}")
+        else:
+            dst = os.path.join(pkg_dest, fname)
+            if not os.path.exists(dst):
+                shutil.copy2(fpath, dst)
+                msgs.append(f"    BFF?  {fname:<45}  (brak metadanych, skopiowano bez zmiany)")
+            else:
+                msgs.append(f"    SKIP  (istnieje) {fname}")
+
+    # ── Archiwum: rozpakowuje → szuka BFF → kopiuje ──────────────────────────
+    elif _is_archive(fname):
+        tmp_dir = tempfile.mkdtemp(prefix='bfftool_')
+        try:
+            ok, method = extract_archive(fpath, tmp_dir)
+            if not ok:
+                msgs.append(f"    ERR   {fname:<45}  (błąd: {method})")
+                return msgs
+
+            bff_files = find_bff_files(tmp_dir)
+            if not bff_files:
+                msgs.append(f"    ARCH  {fname:<45}  (brak BFF po rozpakowaniu [{method}])")
+                return msgs
+
+            for bff_path in bff_files:
+                info = get_bff_info(bff_path)
+                if info and info['package'] != '(nieznana)' and info['vrmf'] != '(nieznana)':
+                    new_name = f"{info['package']}.{info['vrmf']}"
+                    dst      = os.path.join(pkg_dest, new_name)
+                    if os.path.exists(dst):
+                        msgs.append(f"    SKIP  (istnieje) {new_name}")
+                    else:
+                        shutil.copy2(bff_path, dst)
+                        msgs.append(f"    ARCH  {fname:<45}  ->  {new_name}  [{method}]")
+                else:
+                    bff_base = os.path.basename(bff_path)
+                    dst = os.path.join(pkg_dest, bff_base)
+                    if not os.path.exists(dst):
+                        shutil.copy2(bff_path, dst)
+                        msgs.append(f"    ARCH  {fname:<45}  ->  {bff_base}  (brak metadanych)")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return msgs
+
+
+def build_output(source_dir, dest_dir, max_workers=None):
     """
     Buduje katalog docelowy instalacyjny AIX ze struktury źródłowej.
+    Przetwarza archiwa równolegle (ThreadPoolExecutor).
 
-    Logika:
-      - Przechodzi przez pierwszy poziom podkatalogów source_dir
-        (np. openssh/, openssl/, perl/) i tworzy je w dest_dir.
-      - Dla każdego pliku w podkatalogu (rekurencyjnie):
-          * Jeśli BFF  → kopiuj do dest_subdir, zmień nazwę na <pakiet>.<VRMF>
-          * Jeśli tar* → rozpakowuje do katalogu tymczasowego, wyszukuje BFF,
-                         kopiuje je z nową nazwą do dest_subdir
-      - Pomija pliki sygnatur (.sig, .asc, .sha256, .md5).
+    Struktura wejściowa:
+      source_dir/
+        openssh/   ← pierwszy poziom = kategoria pakietu
+          *.tar.Z, *.tar, BFF ...
+        openssl/
+          ...
+
+    Argumenty:
+      max_workers – liczba równoległych wątków (domyślnie: cpu_count)
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     source_dir = os.path.abspath(source_dir)
     dest_dir   = os.path.abspath(dest_dir)
 
@@ -425,19 +496,21 @@ def build_output(source_dir, dest_dir):
         print(f"[BŁĄD] Katalog źródłowy nie istnieje: {source_dir}")
         return
 
-    # Pierwszy poziom podkatalogów (kategorie pakietów)
-    top_entries = sorted(os.listdir(source_dir))
-    top_dirs    = [e for e in top_entries if os.path.isdir(os.path.join(source_dir, e))]
-
+    top_dirs = sorted(
+        e for e in os.listdir(source_dir)
+        if os.path.isdir(os.path.join(source_dir, e))
+    )
     if not top_dirs:
         print(f"[BŁĄD] Brak podkatalogów w: {source_dir}")
         return
 
+    workers = max_workers or os.cpu_count() or 4
+    SKIP_EXTS = ('.sig', '.asc', '.sha256', '.sha512', '.md5', '.sha1')
+
     print(f"\n  Źródło  : {source_dir}")
     print(f"  Cel     : {dest_dir}")
-    print(f"  Pakiety : {', '.join(top_dirs)}\n")
-
-    SKIP_EXTS = ('.sig', '.asc', '.sha256', '.sha512', '.md5', '.sha1')
+    print(f"  Pakiety : {', '.join(top_dirs)}")
+    print(f"  Wątki   : {workers}\n")
 
     for pkg_dir_name in top_dirs:
         pkg_src  = os.path.join(source_dir, pkg_dir_name)
@@ -446,76 +519,40 @@ def build_output(source_dir, dest_dir):
 
         print(f"  [{pkg_dir_name}]")
 
-        # Zbierz wszystkie pliki w podkatalogu (rekurencyjnie)
+        # Zbierz pliki do przetworzenia
+        files_to_process = []
         for root, _dirs, files in os.walk(pkg_src):
             for fname in sorted(files):
-                fpath  = os.path.join(root, fname)
+                fpath   = os.path.join(root, fname)
                 fname_l = fname.lower()
-
-                # Pomijamy pliki sygnatur / sum kontrolnych
                 if any(fname_l.endswith(ext) for ext in SKIP_EXTS):
                     continue
+                if is_bff_file(fpath) or _is_archive(fname):
+                    files_to_process.append(fpath)
 
-                # ── BFF: kopiuj i zmień nazwę ────────────────────────────
-                if is_bff_file(fpath):
-                    info = get_bff_info(fpath)
-                    if info and info['package'] != '(nieznana)' and info['vrmf'] != '(nieznana)':
-                        new_name = f"{info['package']}.{info['vrmf']}"
-                        dst      = os.path.join(pkg_dest, new_name)
-                        if os.path.exists(dst):
-                            print(f"    SKIP  (istnieje) {new_name}")
-                        else:
-                            shutil.copy2(fpath, dst)
-                            print(f"    BFF   {fname:<45}  ->  {new_name}")
-                    else:
-                        # Nie można odczytać info – kopiuj bez zmiany nazwy
-                        dst = os.path.join(pkg_dest, fname)
-                        if not os.path.exists(dst):
-                            shutil.copy2(fpath, dst)
-                            print(f"    BFF?  {fname:<45}  (brak metadanych, skopiowano bez zmiany)")
-                        else:
-                            print(f"    SKIP  (istnieje) {fname}")
+        if not files_to_process:
+            print()
+            continue
 
-                # ── Archiwum: rozpakowuje → szuka BFF → kopiuje ──────────
-                elif _is_archive(fname):
-                    tmp_dir = tempfile.mkdtemp(prefix='bfftool_')
-                    try:
-                        ok, method = extract_archive(fpath, tmp_dir)
-                        if not ok:
-                            print(f"    ERR   {fname:<45}  (błąd rozpakowania: {method})")
-                            continue
-
-                        bff_files = find_bff_files(tmp_dir)
-                        if not bff_files:
-                            print(f"    ARCH  {fname:<45}  (brak plików BFF po rozpakowaniu [{method}])")
-                            continue
-
-                        for bff_path in bff_files:
-                            info = get_bff_info(bff_path)
-                            if info and info['package'] != '(nieznana)' and info['vrmf'] != '(nieznana)':
-                                new_name = f"{info['package']}.{info['vrmf']}"
-                                dst      = os.path.join(pkg_dest, new_name)
-                                if os.path.exists(dst):
-                                    print(f"    SKIP  (istnieje) {new_name}")
-                                else:
-                                    shutil.copy2(bff_path, dst)
-                                    print(f"    ARCH  {fname:<45}  ->  {new_name}  [{method}]")
-                            else:
-                                bff_base = os.path.basename(bff_path)
-                                dst = os.path.join(pkg_dest, bff_base)
-                                if not os.path.exists(dst):
-                                    shutil.copy2(bff_path, dst)
-                                    print(f"    ARCH  {fname:<45}  ->  {bff_base}  (brak metadanych)")
-                    finally:
-                        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-                else:
-                    # Inny plik – pomijamy
-                    pass
+        # Równoległa ekstrakcja
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(_process_one_file, fpath, pkg_dest, SKIP_EXTS): fpath
+                for fpath in files_to_process
+            }
+            # Wydruk w kolejności zgłaszania ukończenia
+            for future in as_completed(futures):
+                try:
+                    for msg in future.result():
+                        print(msg)
+                except Exception as exc:
+                    src = os.path.basename(futures[future])
+                    print(f"    ERR   {src:<45}  ({exc})")
 
         print()
 
     print(f"  Gotowe. Wynik w: {dest_dir}\n")
+
 
 
 # ===========================================================================
@@ -538,17 +575,34 @@ def main():
     flags = [a for a in args if a.startswith('--')]
     paths = [a for a in args if not a.startswith('--')]
 
-    show_info = '--info'   in flags
-    do_rename = '--rename' in flags
-    do_build  = '--build'  in flags
+    show_info  = '--info'   in flags
+    do_rename  = '--rename' in flags
+    do_build   = '--build'  in flags
+
+    # --workers N
+    workers = None
+    for fl in flags:
+        if fl.startswith('--workers='):
+            try:
+                workers = int(fl.split('=', 1)[1])
+            except ValueError:
+                pass
+    if workers is None:
+        for i, a in enumerate(args):
+            if a == '--workers' and i + 1 < len(args):
+                try:
+                    workers = int(args[i + 1])
+                    paths = [p for p in paths if p != args[i + 1]]
+                except ValueError:
+                    pass
 
     # ── tryb --build: wymaga dokładnie 2 ścieżek ────────────────────────────
     if do_build:
         if len(paths) != 2:
             print("[BŁĄD] --build wymaga dokładnie dwóch argumentów:")
-            print("       bfftool.py --build <źródło> <cel>")
+            print("       bfftool.py --build <źródło> <cel> [--workers N]")
             sys.exit(1)
-        build_output(paths[0], paths[1])
+        build_output(paths[0], paths[1], max_workers=workers)
         return
 
     # ── pozostałe tryby ──────────────────────────────────────────────────────
