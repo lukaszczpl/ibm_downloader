@@ -927,6 +927,12 @@ class IBMOpenSSHDownloader:
                 content = self.page.content()
                 content_lower = content.lower()
                 
+                # Sprawdź stronę błędu IBM
+                if "an error has occurred" in content_lower and "we have no information about the product" in content_lower:
+                    log.warning("[%ds] IBM zwrocil blad: 'An error has occurred – We have no information about the product you requested.'", elapsed)
+                    log.warning("Pakiet moze byc niedostepny lub URL jest nieprawidlowy.")
+                    return False
+
                 # Sprawdź CAPTCHA
                 if "captcha" in content_lower:
                     log.warning("[%ds] Wykryto CAPTCHA! Wymagana interwencja.", elapsed)
@@ -1644,7 +1650,15 @@ class IBMOpenSSHDownloader:
                     continue
 
                 if not package_urls:
-                    log.warning(f"Nie znaleziono plikow dla pakietu {pkg}")
+                    # Sprawdź czy strona zawiera komunikat błędu IBM
+                    try:
+                        page_content = self.page.content().lower()
+                        if "an error has occurred" in page_content and "we have no information about the product" in page_content:
+                            log.warning(f"Pakiet '{pkg}' nie istnieje na IBM MRS: strona zwrocila blad 'An error has occurred'.")
+                        else:
+                            log.warning(f"Nie znaleziono plikow dla pakietu {pkg}")
+                    except Exception:
+                        log.warning(f"Nie znaleziono plikow dla pakietu {pkg}")
                     continue
 
                 # Pobieranie
