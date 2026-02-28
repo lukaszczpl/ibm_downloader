@@ -19,10 +19,12 @@ Dla plików .tar.Z wymagane jest jedno z: 7z (Windows) lub zcat (Unix/AIX).
 import sys
 import os
 import re
+import signal
 import struct
 import shutil
 import tarfile
 import tempfile
+import threading
 import subprocess
 import io
 try:
@@ -30,6 +32,38 @@ try:
     HAS_UNLZW3 = True
 except ImportError:
     HAS_UNLZW3 = False
+
+# ---------------------------------------------------------------------------
+# Obsługa CTRL+C / SIGTERM – natychmiastowe zamknięcie subprocessów
+# ---------------------------------------------------------------------------
+_active_procs: set = set()
+_procs_lock         = threading.Lock()
+_shutdown_flag      = threading.Event()
+
+
+def _kill_all_procs():
+    """Natychmiast ubija wszystkie aktywne subprocessy (unlzw3, zcat)."""
+    with _procs_lock:
+        for proc in list(_active_procs):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        _active_procs.clear()
+
+
+def _sigint_handler(signum, frame):
+    """Obsługuje SIGINT (CTRL+C) i SIGTERM."""
+    _shutdown_flag.set()
+    _kill_all_procs()
+    print("\n\n  [Przerwano – czyszczenie i zamykanie...]\n", flush=True)
+    # Wychodzimy z kodem 130 (konwencja: SIGINT)
+    sys.exit(130)
+
+
+signal.signal(signal.SIGINT,  _sigint_handler)
+signal.signal(signal.SIGTERM, _sigint_handler)
+
 
 # ---------------------------------------------------------------------------
 # Stałe
@@ -309,7 +343,7 @@ def _extract_tar_z(src_path, dest_dir):
                 tf.extractall(dest_dir)
 
     # 1) unlzw3 jako subprocess → PIPE → tarfile r|
-    if HAS_UNLZW3:
+    if HAS_UNLZW3 and not _shutdown_flag.is_set():
         proc = None
         try:
             proc = subprocess.Popen(
@@ -317,6 +351,8 @@ def _extract_tar_z(src_path, dest_dir):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
+            with _procs_lock:
+                _active_procs.add(proc)
             _extractall_stream(proc.stdout)
             proc.stdout.close()
             proc.wait(timeout=120)
@@ -328,47 +364,66 @@ def _extract_tar_z(src_path, dest_dir):
                     proc.kill()
                 except Exception:
                     pass
-        # fallback: in-memory (na wypadek gdyby 'r|' nie zadziałał)
-        try:
-            with open(src_path, 'rb') as f:
-                raw_z = f.read()
-            raw_tar = unlzw(raw_z)
-            with tarfile.open(fileobj=io.BytesIO(raw_tar), mode='r:') as tf:
-                try:
-                    tf.extractall(dest_dir, filter='data')
-                except TypeError:
-                    tf.extractall(dest_dir)
-            return True, 'unlzw3-mem'
-        except Exception:
-            pass
+        finally:
+            if proc:
+                with _procs_lock:
+                    _active_procs.discard(proc)
+        # fallback: in-memory
+        if not _shutdown_flag.is_set():
+            try:
+                with open(src_path, 'rb') as f:
+                    raw_z = f.read()
+                raw_tar = unlzw(raw_z)
+                with tarfile.open(fileobj=io.BytesIO(raw_tar), mode='r:') as tf:
+                    try:
+                        tf.extractall(dest_dir, filter='data')
+                    except TypeError:
+                        tf.extractall(dest_dir)
+                return True, 'unlzw3-mem'
+            except Exception:
+                pass
 
     # 2) zcat → PIPE → tarfile r|
-    try:
-        proc = subprocess.Popen(
-            ['zcat', src_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        _extractall_stream(proc.stdout)
-        proc.stdout.close()
-        proc.wait(timeout=120)
-        if proc.returncode == 0:
-            return True, 'zcat-stream'
-    except (FileNotFoundError, Exception):
-        pass
+    if not _shutdown_flag.is_set():
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                ['zcat', src_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            with _procs_lock:
+                _active_procs.add(proc)
+            _extractall_stream(proc.stdout)
+            proc.stdout.close()
+            proc.wait(timeout=120)
+            if proc.returncode == 0:
+                return True, 'zcat-stream'
+        except (FileNotFoundError, Exception):
+            if proc:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        finally:
+            if proc:
+                with _procs_lock:
+                    _active_procs.discard(proc)
 
     # 3) 7-Zip (cały plik)
-    try:
-        r = subprocess.run(
-            ['7z', 'x', '-y', src_path, f'-o{dest_dir}'],
-            capture_output=True, timeout=300
-        )
-        if r.returncode == 0:
-            return True, '7z'
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    if not _shutdown_flag.is_set():
+        try:
+            r = subprocess.run(
+                ['7z', 'x', '-y', src_path, f'-o{dest_dir}'],
+                capture_output=True, timeout=300
+            )
+            if r.returncode == 0:
+                return True, '7z'
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
 
     return False, "Nie można rozpakować .tar.Z – zainstaluj: pip install unlzw3"
+
 
 
 
@@ -414,8 +469,12 @@ def _process_one_file(fpath, pkg_dest, SKIP_EXTS):
     fname_l = fname.lower()
     msgs    = []
 
+    if _shutdown_flag.is_set():
+        return msgs
+
     if any(fname_l.endswith(ext) for ext in SKIP_EXTS):
         return msgs   # sygnatura / suma kontrolna – pomijamy
+
 
     # ── BFF: kopiuj i zmień nazwę ────────────────────────────────────────────
     if is_bff_file(fpath):
@@ -550,23 +609,35 @@ def build_output(source_dir, dest_dir, max_workers=None, packages=None):
             continue
 
         # Równoległa ekstrakcja
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(_process_one_file, fpath, pkg_dest, SKIP_EXTS): fpath
-                for fpath in files_to_process
-            }
-            # Wydruk w kolejności zgłaszania ukończenia
-            for future in as_completed(futures):
-                try:
-                    for msg in future.result():
-                        print(msg)
-                except Exception as exc:
-                    src = os.path.basename(futures[future])
-                    print(f"    ERR   {src:<45}  ({exc})")
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(_process_one_file, fpath, pkg_dest, SKIP_EXTS): fpath
+                    for fpath in files_to_process
+                }
+                for future in as_completed(futures):
+                    if _shutdown_flag.is_set():
+                        break
+                    try:
+                        for msg in future.result():
+                            print(msg)
+                    except Exception as exc:
+                        src = os.path.basename(futures[future])
+                        print(f"    ERR   {src:<45}  ({exc})")
+        except KeyboardInterrupt:
+            _shutdown_flag.set()
+            _kill_all_procs()
+            print("\n  [Przerwano]")
+            return
+
+        if _shutdown_flag.is_set():
+            break
 
         print()
 
-    print(f"  Gotowe. Wynik w: {dest_dir}\n")
+    if not _shutdown_flag.is_set():
+        print(f"  Gotowe. Wynik w: {dest_dir}\n")
+
 
 
 
