@@ -472,7 +472,7 @@ def _process_one_file(fpath, pkg_dest, SKIP_EXTS):
     return msgs
 
 
-def build_output(source_dir, dest_dir, max_workers=None):
+def build_output(source_dir, dest_dir, max_workers=None, packages=None):
     """
     Buduje katalog docelowy instalacyjny AIX ze struktury źródłowej.
     Przetwarza archiwa równolegle (ThreadPoolExecutor).
@@ -486,6 +486,7 @@ def build_output(source_dir, dest_dir, max_workers=None):
 
     Argumenty:
       max_workers – liczba równoległych wątków (domyślnie: cpu_count)
+      packages    – lista nazw pakietów do przetworzenia (None = wszystkie)
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -496,12 +497,26 @@ def build_output(source_dir, dest_dir, max_workers=None):
         print(f"[BŁĄD] Katalog źródłowy nie istnieje: {source_dir}")
         return
 
-    top_dirs = sorted(
+    all_dirs = sorted(
         e for e in os.listdir(source_dir)
         if os.path.isdir(os.path.join(source_dir, e))
     )
-    if not top_dirs:
+    if not all_dirs:
         print(f"[BŁĄD] Brak podkatalogów w: {source_dir}")
+        return
+
+    # Filtrowanie po --packages
+    if packages:
+        pkg_set  = {p.lower() for p in packages}
+        top_dirs = [d for d in all_dirs if d.lower() in pkg_set]
+        unknown  = pkg_set - {d.lower() for d in all_dirs}
+        for u in sorted(unknown):
+            print(f"  [UWAGA] Pakiet nie istnieje w źródłe: {u}")
+    else:
+        top_dirs = all_dirs
+
+    if not top_dirs:
+        print(f"[BŁĄD] Żadne z podanych pakietów nie zostało znalezione w: {source_dir}")
         return
 
     workers = max_workers or os.cpu_count() or 4
@@ -564,12 +579,16 @@ def main():
 
     if not args or args[0] in ('-h', '--help'):
         print("Użycie: bfftool.py [OPCJA] <plik.bff|katalog> [...]")
-        print("        bfftool.py --build <katalog_źródłowy> <katalog_docelowy>")
+        print("        bfftool.py --build <katalog_źródłowy> <katalog_docelowy> [OPCJE]")
         print()
         print("  (brak flag)  kompaktowa lista: pakiet + VRMF + nazwa pliku")
         print("  --info       pełny blok z fileset'ami dla każdego pliku")
         print("  --rename     zmień nazwę na standard bffcreate: <pakiet>.<V.R.M.F>")
         print("  --build      zbuduj katalog instalacyjny AIX ze źródeł tar/tar.Z/BFF")
+        print()
+        print("  Opcje --build:")
+        print("    --packages pkg1 pkg2 ...   ogranicz do wybranych pakietów")
+        print("    --workers N                liczba równoległych wątków (domyślnie: cpu_count)")
         sys.exit(0 if args else 1)
 
     flags = [a for a in args if a.startswith('--')]
@@ -596,13 +615,26 @@ def main():
                 except ValueError:
                     pass
 
+    # --packages pkg1 pkg2 ...
+    packages = []
+    i = 0
+    while i < len(args):
+        if args[i] == '--packages':
+            i += 1
+            while i < len(args) and not args[i].startswith('--'):
+                packages.append(args[i])
+                paths = [p for p in paths if p != args[i]]
+                i += 1
+            continue
+        i += 1
+
     # ── tryb --build: wymaga dokładnie 2 ścieżek ────────────────────────────
     if do_build:
         if len(paths) != 2:
             print("[BŁĄD] --build wymaga dokładnie dwóch argumentów:")
-            print("       bfftool.py --build <źródło> <cel> [--workers N]")
+            print("       bfftool.py --build <źródło> <cel> [--workers N] [--packages pkg1 pkg2]")
             sys.exit(1)
-        build_output(paths[0], paths[1], max_workers=workers)
+        build_output(paths[0], paths[1], max_workers=workers, packages=packages or None)
         return
 
     # ── pozostałe tryby ──────────────────────────────────────────────────────
