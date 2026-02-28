@@ -1495,6 +1495,20 @@ class IBMOpenSSHDownloader:
         log.info("IBM MRS Downloader (Playwright – pipe mode)")
         log.info("=" * 60)
 
+        # --- Sprawdzenie rownolegych uruchomien ---
+        downloading_lock = self._lock_path("downloading.lock")
+        if downloading_lock.exists():
+            log.error("=" * 60)
+            log.error("[LOCK] Pobieranie jest juz w toku (lub poprzedni proces nie zakonczyl sie poprawnie)!")
+            log.error("[LOCK] Plik semafora: %s", downloading_lock)
+            try:
+                log.error("[LOCK] Szczegoly:\n%s", downloading_lock.read_text(encoding="utf-8").strip())
+            except Exception:
+                pass
+            log.error("[LOCK] Jesli poprzedni proces zakonczyl sie niespodziewanie, usun '%s' recznie.", downloading_lock.name)
+            log.error("=" * 60)
+            sys.exit(1)
+
         # --- Semafory plikowe ---
         # Usun stare semafory na poczatku (czysty start)
         self._remove_lock("downloading.lock")
@@ -1506,6 +1520,7 @@ class IBMOpenSSHDownloader:
             f"packages={','.join(self.packages)}\n"
         )
         self._create_lock("downloading.lock", lock_content)
+
 
         _had_critical_error = False
         try:
