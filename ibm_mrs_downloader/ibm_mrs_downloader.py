@@ -1455,7 +1455,33 @@ class IBMOpenSSHDownloader:
             self._cleanup()
 
     # -----------------------------------------------------------------------
-    # Główna metoda (batch)
+    def _lock_path(self, name: str) -> Path:
+        """Sciezka do pliku semafora w katalogu glownym pobieran."""
+        return Path(self.base_download_dir) / name
+
+    def _create_lock(self, name: str, content: str = "") -> None:
+        """Tworzy plik semafora (atomowo: zapis + rename)."""
+        path = self._lock_path(name)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.parent / (name + ".tmp")
+            tmp.write_text(content, encoding="utf-8")
+            tmp.replace(path)
+            log.info("[LOCK] Utworzono semafor: %s", path)
+        except Exception as e:
+            log.warning("[LOCK] Nie udalo sie utworzyc semafora %s: %s", name, e)
+
+    def _remove_lock(self, name: str) -> None:
+        """Usuwa plik semafora (ignoruje brak pliku)."""
+        path = self._lock_path(name)
+        try:
+            path.unlink(missing_ok=True)
+            log.info("[LOCK] Usunieto semafor: %s", path)
+        except Exception as e:
+            log.warning("[LOCK] Nie udalo sie usunac semafora %s: %s", name, e)
+
+    # -----------------------------------------------------------------------
+    # Glowna metoda (batch)
     # -----------------------------------------------------------------------
     def run(
         self,
@@ -1469,6 +1495,19 @@ class IBMOpenSSHDownloader:
         log.info("IBM MRS Downloader (Playwright – pipe mode)")
         log.info("=" * 60)
 
+        # --- Semafory plikowe ---
+        # Usun stare semafory na poczatku (czysty start)
+        self._remove_lock("downloading.lock")
+        self._remove_lock("download_error.lock")
+        # Oznacz, ze pobieranie jest w toku
+        lock_content = (
+            f"pid={os.getpid()}\n"
+            f"started={time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
+            f"packages={','.join(self.packages)}\n"
+        )
+        self._create_lock("downloading.lock", lock_content)
+
+        _had_critical_error = False
         try:
             self._setup_browser(headless=True)
             self._screenshot_counter = 0  # Reset licznika screenshotów
@@ -1603,12 +1642,23 @@ class IBMOpenSSHDownloader:
             log.warning("Przerwano przez uzytkownika")
         except Exception as e:
             log.error("Blad krytyczny: %s", e)
+            _had_critical_error = True
             try:
                 self._save_diagnostic_screenshot("critical_error")
             except Exception:
                 pass
             raise
         finally:
+            # Usun semafor 'w toku'
+            self._remove_lock("downloading.lock")
+            # Jezeli wystapil blad krytyczny -- zostaw semafor bledu
+            if _had_critical_error:
+                err_content = (
+                    f"pid={os.getpid()}\n"
+                    f"time={time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
+                    f"packages={','.join(self.packages)}\n"
+                )
+                self._create_lock("download_error.lock", err_content)
             self._cleanup()
 
     def _register_signal_handlers(self):
