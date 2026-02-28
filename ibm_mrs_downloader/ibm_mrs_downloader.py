@@ -1588,13 +1588,15 @@ class IBMOpenSSHDownloader:
                                 return
                         else:
                             log.error("Brak sekcji [ibm] lub [google] w pliku credentials")
+                            _had_critical_error = True
                             return
 
-                        # Czekaj na stronę z pakietami po logowaniu
+                        # Czekaj na strone z pakietami po logowaniu
                         if not self._wait_for_packages_page(timeout=120):
                             log.error("Nie udalo sie wykryc strony z pakietami")
-                            log.error("Mozliwe przyczyny: 2FA, CAPTCHA, blad logowania")
+                            log.error("Mozliwe przyczyny: 2FA, CAPTCHA, blad logowania, nieznany pakiet (IBM error page)")
                             self._save_diagnostic_screenshot("login_failed")
+                            _had_critical_error = True
                             return
                     
                     first_run = False
