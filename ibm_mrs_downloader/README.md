@@ -1,17 +1,33 @@
 # IBM MRS Downloader
 
-Skrypt do automatycznego pobierania pakietów OpenSSH ze strony IBM. Obsługuje logowanie przez IBMid oraz Google, pracę w trybie headless (na serwerach), konfigurację proxy oraz wznawianie sesji.
+Skrypt do automatycznego pobierania pakietów ze strony IBM MRS (Machine Readable Software). Obsługuje logowanie przez IBMid lub Google, pracę w trybie headless (na serwerach), konfigurację proxy oraz wznawianie sesji.
+
+Silnik: **Playwright** (komunikacja z przeglądarką przez PIPE — bez otwartych portów TCP, bez ChromeDriver).
 
 ## 📋 Wymagania
 
 - Python 3.8+
-- Google Chrome (zainstalowany w systemie)
+- Playwright (`pip install playwright`)
+- Chromium (`playwright install chromium`)
 
-## 🛠️ Instalacja i Konfiguracja (Venv)
+## 🛠️ Instalacja i Konfiguracja
 
-Zalecane jest użycie wirtualnego środowiska (`venv`), aby odizolować zależności projektu.
+### Windows — skrypt automatyczny (zalecane)
 
-### Windows (PowerShell)
+```bat
+run_windows.bat
+```
+
+Skrypt automatycznie tworzy `venv`, instaluje zależności i uruchamia program z opcją `--help`.
+
+### Linux — skrypt automatyczny (zalecane)
+
+```bash
+./run_linux.sh --auto-login credentials.ini
+```
+
+### Ręczna instalacja (Windows PowerShell)
+
 ```powershell
 # 1. Utwórz środowisko wirtualne
 py -m venv venv
@@ -21,20 +37,25 @@ py -m venv venv
 
 # 3. Zainstaluj zależności
 pip install -r requirements.txt
+
+# 4. Zainstaluj Chromium
+playwright install chromium
 ```
 
-### Linux
+### Ręczna instalacja (Linux)
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+playwright install chromium
 ```
 
 ## 🌐 Konfiguracja pip (Sieć Korporacyjna / Proxy)
 
-Skrypty uruchomieniowe (`run_playwright_linux.sh`, `run_playwright_windows.bat`) automatycznie tworzą plik konfiguracji pip wewnątrz katalogu `venv`:
+Skrypty uruchomieniowe (`run_linux.sh`, `run_windows.bat`) automatycznie tworzą plik konfiguracji pip wewnątrz katalogu `venv`:
 
-| System | Plik | 
+| System | Plik |
 |--------|------|
 | Linux | `venv/pip.conf` |
 | Windows | `venv\pip.ini` |
@@ -62,84 +83,72 @@ trusted-host = nexus.corp.example.com
 
 ## 🔧 Konfiguracja Offline (Firewall Korporacyjny)
 
-Jeśli firewall blokuje automatyczne pobieranie Chrome/ChromeDriver, masz dwie opcje:
-
-### Opcja A: Automatyczny setup (zalecane)
-Użyj dołączonego skryptu `setup_chrome.py` (bez zewnętrznych zależności):
+Jeśli firewall blokuje pobieranie Chromium przez Playwright, użyj dołączonego skryptu `setup.py`:
 
 ```bash
-# Na komputerze Z DOSTĘPEM do internetu
-python setup_chrome.py
+# Na komputerze Z DOSTĘPEM do internetu (pobierze wszystko do venv)
+python setup.py
+
+# Z proxy korporacyjnym
+python setup.py --proxy http://user:pass@proxy.corp:8080
 ```
 
 Skrypt automatycznie:
-- Wykryje system operacyjny i architekturę
-- Pobierze najnowszą stabilną wersję Chrome i ChromeDriver
-- Utworzy katalogi `chrome/` i `chromedriver/` z odpowiednimi binariami
+- Tworzy venv (jeśli nie istnieje)
+- Instaluje Playwright
+- Pobiera Chromium przez Playwright
 
-### Opcja B: Ręczna konfiguracja
-
-#### 1. Pobierz ręcznie (na komputerze z internetem):
-- **ChromeDriver**: https://googlechromelabs.github.io/chrome-for-testing/ (dopasuj wersję do Chrome)
-- **Chrome Portable** (opcjonalnie): https://www.chromium.org/getting-involved/download-chromium/
-
-#### 2. Stwórz strukturę katalogów w folderze projektu:
-```
-ibm_mrs_downloader/
-├── ibm_mrs_downloader.py
-├── chromedriver/
-│   └── chromedriver.exe    (Windows)
-│   └── chromedriver        (Linux/AIX)
-└── chrome/                 (opcjonalnie - można użyć systemowego)
-    └── chrome.exe          (Windows)
-    └── chrome              (Linux/AIX)
-```
-
-### 3. Ustaw uprawnienia (Linux/AIX):
-```bash
-chmod +x chromedriver/chromedriver
-chmod +x chrome/chrome  # jeśli używasz lokalnego Chrome
-```
-
-### 4. Uruchom normalnie
-Skrypt automatycznie wykryje i użyje lokalnych binariów:
-```bash
-python ibm_mrs_downloader.py --help
-# Output: [INFO] Uzywam lokalnego ChromeDriver: ...
-```
+> **Uwaga:** Po pobraniu, katalog `venv` możesz skopiować na docelową maszynę bez dostępu do internetu.
 
 ## 🚀 Użycie
 
 Program można uruchamiać na kilka sposobów w zależności od potrzeb.
 **Pamiętaj, aby uruchamiać te komendy w aktywnym środowisku venv!**
 
-### 1. Tryb Interaktywny (Domyślny)
-Najlepszy przy pierwszym uruchomieniu. Otwiera przeglądarkę, pozwala na ręczne logowanie (jeśli automatyczne nie jest skonfigurowane) i zapisuje sesję.
+### 1. Tryb Batch (Headless, z plikiem credentials)
+Idealny dla serwerów lub harmonogramów zadań. Działa w tle.
+
+```bash
+python ibm_mrs_downloader.py --auto-login credentials.ini
+```
+
+### 2. Tryb Interaktywny (Domyślny)
+Otwiera przeglądarkę widoczną dla użytkownika, pozwala na ręczne logowanie i zapisuje sesję.
 
 ```bash
 python ibm_mrs_downloader.py
-```
-
-### 2. Tryb Headless (Bez GUI)
-Idealny dla serwerów lub harmonogramów zadań. Działa w tle.
-Wymaga skonfigurowanego pliku `credentials.ini` lub aktywnej (zapisanej wcześniej) sesji.
-
-```bash
-python ibm_mrs_downloader.py --headless --auto-login
 ```
 
 ### 3. Użycie Proxy
 Jeśli jesteś w sieci korporacyjnej za firewallem:
 
 ```bash
-python ibm_mrs_downloader.py --proxy http://user:pass@proxy.corp:8080
+python ibm_mrs_downloader.py --auto-login credentials.ini --proxy http://user:pass@proxy.corp:8080
 ```
 
-### 4. Własny Katalog Profilu
-Domyślnie profil Chrome (ciasteczka) zapisuje się w `.chrome_profile`. Możesz to zmienić:
+### 4. Z firmowym CA (SSL Inspection / MITM)
 
 ```bash
-python ibm_mrs_downloader.py --profile-dir /tmp/my_custom_profile
+python ibm_mrs_downloader.py --auto-login credentials.ini --corp-ca /etc/ssl/certs/corp-ca.pem
+```
+
+### 5. Eksport URLi (bez pobierania)
+
+```bash
+python ibm_mrs_downloader.py --auto-login credentials.ini --export-urls
+```
+
+### 6. Filtrowanie pakietów i wersji
+
+```bash
+# Pobierz konkretne pakiety (domyślnie: openssh)
+python ibm_mrs_downloader.py --auto-login credentials.ini -p openssh openssl rpm
+
+# Filtruj wersje pakietu
+python ibm_mrs_downloader.py --auto-login credentials.ini --version 9.6
+
+# Filtruj wg wersji AIX
+python ibm_mrs_downloader.py --auto-login credentials.ini --aix-version 7.3
 ```
 
 ## 🔐 Automatyczne Logowanie (`--auto-login`)
@@ -159,9 +168,19 @@ Możesz też użyć sekcji `[google]`, ale logowanie IBMid jest zalecane (bardzi
 
 | Argument | Opis |
 |----------|------|
-| `-d`, `--download-dir` | Ścieżka do katalogu, gdzie zapisać pliki (domyślnie `./downloads`) |
+| `-d`, `--download-dir` | Katalog docelowy dla pobieranych plików (domyślnie: `./downloads`) |
 | `-v`, `--version` | Filtruj wersje pakietów (np. `9.6`) |
-| `--headless` | Uruchom przeglądarkę w trybie ukrytym (bez okna) |
-| `--auto-login [PLIK]` | Włącz autologowanie (opcjonalnie ścieżka do .ini, domyślnie `credentials.ini`) |
-| `--profile-dir KATALOG` | Ścieżka do profilu Chrome (zachowuje sesję) |
+| `-p`, `--packages` | Lista pakietów do pobrania (domyślnie: `openssh`; dostępne np. `openssh openssl rpm`) |
+| `--auto-login [PLIK]` | Włącz tryb batch — ścieżka do pliku `.ini` (domyślnie: `credentials.ini`) |
+| `--profile-dir KATALOG` | Ścieżka do profilu przeglądarki (zachowuje sesję) |
 | `--proxy URL` | Adres proxy (np. `http://user:pass@host:port`) |
+| `--corp-ca PLIK` | Ścieżka do firmowego CA `.pem` (SSL inspection / MITM) |
+| `--no-proxy-autodetect` | Wyłącz auto-wykrycie proxy z zmiennych środowiskowych |
+| `--retry N` | Liczba prób ponownego pobrania (domyślnie: `5`) |
+| `--download-timeout S` | Timeout pobierania w sekundach (domyślnie: `300`) |
+| `--parallel N` | Liczba równoczesnych pobierań (domyślnie: `1`) |
+| `--headless-shell` | Użyj okrojonej binarki `chrome-headless-shell` zamiast pełnego Chrome |
+| `--export-urls` | Eksportuj znalezione URL-e do plików `urls/{pakiet}.txt` (bez pobierania) |
+| `--limit N` | Limit pobieranych/eksportowanych wersji per pakiet (pobiera najnowsze) |
+| `--aix-version VER` | Filtruj pakiety wg wersji AIX (np. `7.1`, `7.3`) |
+| `--debug` | Włącz tryb debug: verbose logi Playwright + Chrome, logowanie żądań sieciowych |

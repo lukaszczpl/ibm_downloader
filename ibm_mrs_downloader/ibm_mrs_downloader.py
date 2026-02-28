@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
-IBM MRS Downloader (Playwright version)
+IBM MRS Downloader
 Pobiera pakiety OpenSSH (i inne) ze strony IBM z autoryzacja przez konto Google lub IBMid.
 
-Wersja Playwright: komunikacja z przegladarka przez PIPE (brak otwartych portow TCP).
+Komunikacja z przegladarka przez Playwright PIPE (brak otwartych portow TCP).
 Eliminuje ChromeDriver i jego serwer HTTP na localhost.
 
 Wymagania:
-    pip install playwright requests
+    pip install playwright
     playwright install chromium
 
 Uzycie:
     # Tryb batch (headless, z plikiem credentials)
-    python ibm_mrs_downloader_playwright.py --auto-login credentials.ini
+    python ibm_mrs_downloader.py --auto-login credentials.ini
 
     # Z proxy korporacyjnym
-    python ibm_mrs_downloader_playwright.py --auto-login credentials.ini --proxy http://proxy.corp:8080
+    python ibm_mrs_downloader.py --auto-login credentials.ini --proxy http://proxy.corp:8080
 
     # Z firmowym CA (SSL inspection)
-    python ibm_mrs_downloader_playwright.py --auto-login credentials.ini --corp-ca /etc/ssl/certs/corp-ca.pem
+    python ibm_mrs_downloader.py --auto-login credentials.ini --corp-ca /etc/ssl/certs/corp-ca.pem
 
     # Format pliku credentials.ini:
     # [ibm]
@@ -1862,19 +1862,19 @@ def main():
         epilog="""
 Tryby pracy:
   # Tryb INTERAKTYWNY (bez argumentow) – otwiera przegladarke do recznego logowania
-  python ibm_mrs_downloader_playwright.py
+  python ibm_mrs_downloader.py
 
   # Tryb BATCH (headless, z plikiem credentials)
-  python ibm_mrs_downloader_playwright.py --auto-login credentials.ini
+  python ibm_mrs_downloader.py --auto-login credentials.ini
 
   # Z proxy korporacyjnym
-  python ibm_mrs_downloader_playwright.py --auto-login credentials.ini --proxy http://proxy.corp:8080
+  python ibm_mrs_downloader.py --auto-login credentials.ini --proxy http://proxy.corp:8080
 
   # Z firmowym CA (SSL inspection / MITM)
-  python ibm_mrs_downloader_playwright.py --auto-login credentials.ini --corp-ca /etc/ssl/certs/corp-ca.pem
+  python ibm_mrs_downloader.py --auto-login credentials.ini --corp-ca /etc/ssl/certs/corp-ca.pem
 
   # Filtrowanie wersji
-  python ibm_mrs_downloader_playwright.py --auto-login credentials.ini --version 9.6
+  python ibm_mrs_downloader.py --auto-login credentials.ini --version 9.6
 
 Format pliku credentials.ini:
   [ibm]

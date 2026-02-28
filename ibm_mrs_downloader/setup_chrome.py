@@ -385,7 +385,7 @@ def setup_chrome_and_chromedriver():
     print(f"Katalog ChromeDriver: {chromedriver_dir}")
     print(f"\nDomyślna binarka: pelny Chrome (chrome/full/)")
     print(f"Okrojona binarka: --headless-shell (chrome/headless/)")
-    print(f"\nMożesz teraz uruchomić ibm_mrs_downloader.py / ibm_mrs_downloader_playwright.py")
+    print(f"\nMożesz teraz uruchomić ibm_mrs_downloader.py")
     
     return True
 

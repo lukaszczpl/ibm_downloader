@@ -2,11 +2,11 @@
 """
 Setup Playwright & Chromium
 Automatycznie instaluje Playwright i pobiera Chromium dla IBM MRS Downloader.
-Obsługuje proxy korporacyjne i środowiska bez dostępu do internetu.
+Obsluguje proxy korporacyjne i srodowiska bez dostepu do internetu.
 
 Uzycie:
-    python setup_playwright.py
-    python setup_playwright.py --proxy http://proxy.corp:8080
+    python setup.py
+    python setup.py --proxy http://proxy.corp:8080
 """
 
 import os
@@ -109,7 +109,7 @@ def setup_playwright(proxy=None):
 
     if not run_cmd([playwright_path, "install", "chromium"], env=env):
         print("[ERROR] Nie udalo sie zainstalowac Chromium.")
-        print("[HINT] Jesli jestes za proxy, uzyj: python setup_playwright.py --proxy http://proxy:8080")
+        print("[HINT] Jesli jestes za proxy, uzyj: python setup.py --proxy http://proxy:8080")
         return False
 
     # 5. Na Linuxie: zainstaluj zależności systemowe (opcjonalnie)
@@ -142,9 +142,9 @@ def setup_playwright(proxy=None):
     print(f"Playwright: {playwright_path}")
     print(f"\nMożesz teraz uruchomić:")
     if system == "windows":
-        print(f"  .\\venv\\Scripts\\python ibm_mrs_downloader_playwright.py --auto-login credentials.ini")
+        print(f"  .\\venv\\Scripts\\python ibm_mrs_downloader.py --auto-login credentials.ini")
     else:
-        print(f"  ./venv/bin/python ibm_mrs_downloader_playwright.py --auto-login credentials.ini")
+        print(f"  ./venv/bin/python ibm_mrs_downloader.py --auto-login credentials.ini")
 
     return True
 

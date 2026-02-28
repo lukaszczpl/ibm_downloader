@@ -2,7 +2,7 @@
 setlocal
 
 echo ========================================================
-echo  IBM MRS Downloader (Playwright) - Setup and Run (Windows)
+echo  IBM MRS Downloader - Setup and Run (Windows)
 echo ========================================================
 
 REM Sprawdz czy Python jest dostepny
@@ -42,7 +42,7 @@ if not exist "venv" (
 
 REM Instalacja zaleznosci
 echo [INFO] Sprawdzanie/Instalacja zaleznosci...
-.\venv\Scripts\pip install -r requirements_playwright.txt
+.\venv\Scripts\pip install -r requirements.txt
 if %errorlevel% neq 0 (
     echo [ERROR] Blad podczas instalacji zaleznosci.
     pause
@@ -73,10 +73,10 @@ if %errorlevel% neq 0 (
 echo.
 echo [INFO] Uruchamianie programu (Help)...
 echo ========================================================
-.\venv\Scripts\python ibm_mrs_downloader_playwright.py --help
+.\venv\Scripts\python ibm_mrs_downloader.py --help
 echo ========================================================
 echo.
 echo Aby uruchomic program z konkretnymi opcjami, edytuj ten plik lub uruchom z linii komend:
-echo .\venv\Scripts\python ibm_mrs_downloader_playwright.py [opcje]
+echo .\venv\Scripts\python ibm_mrs_downloader.py [opcje]
 echo.
 echo.

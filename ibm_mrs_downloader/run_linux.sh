@@ -1,9 +1,9 @@
 #!/bin/bash
-# IBM MRS Downloader (Playwright) - Setup & Run (Linux, tryb batch/headless)
-# Uzycie: ./run_playwright_linux.sh [opcje]
-# Przyklad: ./run_playwright_linux.sh --auto-login credentials.ini
-#           ./run_playwright_linux.sh --auto-login credentials.ini --proxy http://proxy.corp:8080
-#           ./run_playwright_linux.sh --auto-login credentials.ini --corp-ca /etc/ssl/certs/corp-ca.pem
+# IBM MRS Downloader - Setup & Run (Linux, tryb batch/headless)
+# Uzycie: ./run_linux.sh [opcje]
+# Przyklad: ./run_linux.sh --auto-login credentials.ini
+#           ./run_linux.sh --auto-login credentials.ini --proxy http://proxy.corp:8080
+#           ./run_linux.sh --auto-login credentials.ini --corp-ca /etc/ssl/certs/corp-ca.pem
 
 set -euo pipefail
 
@@ -11,7 +11,7 @@ VENV_DIR="venv"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "========================================================"
-echo " IBM MRS Downloader (Playwright) - Setup & Run (Linux)"
+echo " IBM MRS Downloader - Setup & Run (Linux)"
 echo "========================================================"
 
 # Sprawdz python3
@@ -44,15 +44,15 @@ fi
 # Aktywacja venv
 source "$VENV_DIR/bin/activate"
 
-# Instalacja/aktualizacja zaleznosci (cicha)
+# Instalacja/aktualizacja zaleznosci
 echo "[INFO] Instalacja zaleznosci..."
 pip install --quiet --upgrade pip
-pip install --quiet playwright requests
+pip install --quiet -r requirements.txt
 
-# Sprawdz czy Chromium jest zainstalowane, zainstaluj jeśli nie
+# Sprawdz czy Chromium jest zainstalowane, zainstaluj jesli nie
 # Instalujemy obie wersje:
-#   chromium          – pełny Chrome (domyślny, lepszy rendering i anti-detekcja)
-#   chrome-headless-shell – okrojona binarka (mniejsza, flaga --headless-shell)
+#   chromium          - pelny Chrome (domyslny, lepszy rendering i anti-detekcja)
+#   chrome-headless-shell - okrojona binarka (mniejsza, flaga --headless-shell)
 if ! playwright install --dry-run chromium &>/dev/null 2>&1; then
     echo "[INFO] Instalacja Chromium (pelny Chrome)..."
     playwright install chromium
@@ -68,7 +68,7 @@ echo "[INFO] Domyslnie uzywa pelnego Chrome. Dodaj --headless-shell aby uzywac o
 echo "========================================================"
 
 # Przekaz wszystkie argumenty do skryptu Python
-python ibm_mrs_downloader_playwright.py "$@"
+python ibm_mrs_downloader.py "$@"
 
 EXIT_CODE=$?
 deactivate
