@@ -2,6 +2,7 @@
 *
 
 # Whitelist specific files
+!excluded_versions.ini
 !bfftool.py
 !ibm_mrs_downloader.py
 !setup_chrome.py

@@ -32,6 +32,7 @@ Uzycie:
 """
 
 import atexit
+import fnmatch
 import os
 import signal
 import socket
@@ -47,7 +48,7 @@ from pathlib import Path
 import urllib.request
 from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 try:
     from playwright.sync_api import sync_playwright, BrowserContext, Page
@@ -69,6 +70,51 @@ log = logging.getLogger("ibm_downloader")
 # Wycisz logi Playwright i urllib3 (zaśmiecają stdout)
 logging.getLogger("playwright").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
+# ---------------------------------------------------------------------------
+# Wykluczone wersje – załadowanie pliku konfiguracyjnego
+# ---------------------------------------------------------------------------
+
+def load_excluded_versions(config_path: str) -> Dict[str, List[str]]:
+    """
+    Ładuje plik excluded_versions.ini i zwraca słownik:
+      { 'openssl': ['1.*', '2.*'], 'openssh': ['7.*'], ... }
+
+    Format pliku:
+      [excluded_versions]
+      openssl = 1.*;2.*
+      openssh = 7.*;8.0.*
+
+    Wzorce są glob-ami (fnmatch) dopasowywanymi do wersji wyciągniętej
+    z nazwy pliku w URL (np. openssl-3.0.15.1001.tar.Z → '3.0.15.1001').
+    """
+    result: Dict[str, List[str]] = {}
+
+    path = Path(config_path)
+    if not path.exists():
+        log.debug("Brak pliku excluded_versions: %s", config_path)
+        return result
+
+    cfg = configparser.ConfigParser()
+    try:
+        cfg.read(str(path), encoding='utf-8')
+    except Exception as e:
+        log.warning("Błąd ładowania excluded_versions.ini: %s", e)
+        return result
+
+    section = 'excluded_versions'
+    if section not in cfg:
+        log.warning("Brak sekcji [excluded_versions] w pliku: %s", config_path)
+        return result
+
+    for package, patterns_str in cfg[section].items():
+        patterns = [p.strip() for p in patterns_str.split(';') if p.strip()]
+        if patterns:
+            result[package.lower()] = patterns
+            log.info("Wykluczone wersje dla '%s': %s", package, ', '.join(patterns))
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +222,10 @@ class IBMOpenSSHDownloader:
         self.use_headless_shell = use_headless_shell
         self.failed_resources = []  # Lista (url, status, type) zasobów z błędem
         self.local_assets_dir = Path(self.profile_dir).expanduser().resolve().parent / "local_assets"
+
+        # Zaladuj wykluczone wersje z pliku konfiguracyjnego
+        excluded_cfg = Path(__file__).parent / "excluded_versions.ini"
+        self.excluded_versions: Dict[str, List[str]] = load_excluded_versions(str(excluded_cfg))
 
         # Przygotowanie katalogu .screenshot (czyszczenie przy każdym starcie)
         debug_log_dir = Path(__file__).parent / ".screenshot"
@@ -813,6 +863,48 @@ class IBMOpenSSHDownloader:
             pass
         return [0]
 
+    @staticmethod
+    def _extract_version_from_url(url: str) -> str:
+        """
+        Wyciąga wersję z nazwy pliku w URL.
+        Przykłady:
+          openssl-3.0.15.1001.tar.Z  →  '3.0.15.1001'
+          OpenSSH_9.7.3013.1000.tar.Z →  '9.7.3013.1000'
+          rpm.rte.4.15.1.1017        →  '4.15.1.1017'
+        Zwraca pusty string jeśli nie znaleziono.
+        """
+        try:
+            filename = urlparse(url).path.split("/")[-1]
+            m = re.search(r'(\d+(?:\.\d+)+)', filename)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+        return ''
+
+    def _is_version_excluded(self, url: str, pkg_name: str) -> bool:
+        """
+        Sprawdza czy URL powinien być pominięty na podstawie pliku
+        excluded_versions.ini.
+
+        Dopasowanie:  fnmatch(version, pattern)
+          np. version='3.0.15.1001', pattern='3.0.*' → True (wykluczone)
+        """
+        patterns = self.excluded_versions.get(pkg_name.lower(), [])
+        if not patterns:
+            return False
+
+        version = self._extract_version_from_url(url)
+        if not version:
+            return False
+
+        for pattern in patterns:
+            if fnmatch.fnmatch(version, pattern):
+                log.info("Pominięto (wykluczona wersja %s, wzór '%s'): %s",
+                         version, pattern, url.split('/')[-1])
+                return True
+        return False
+
     def _find_package_links(self, aix_version_filter: str = None, pkg_name: str = None) -> List[str]:
         """
         Parsuje strone i znajduje linki do pakietow.
@@ -879,6 +971,8 @@ class IBMOpenSSHDownloader:
                                     matched = True
                             
                             if matched:
+                                if self._is_version_excluded(full_url, pkg_name or ""):
+                                    continue
                                 package_urls.add(full_url)
         except Exception as e:
             log.debug(f"Blad podczas parsowania struktury tabeli: {e}")
@@ -897,6 +991,8 @@ class IBMOpenSSHDownloader:
                             # W fallbacku nie mamy naglowkow grup, wiec jesli filtr 
                             # jest aktywny, ignorujemy wszystko by uniknac pobrania zlej wersji
                             if not aix_version_filter:
+                                if self._is_version_excluded(full_url, pkg_name or ""):
+                                    continue
                                 package_urls.add(full_url)
                             else:
                                 log.debug(f"Pominieto w fallbacku (brak kontekstu AIX): {full_url}")
