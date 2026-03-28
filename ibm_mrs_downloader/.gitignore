@@ -2,6 +2,8 @@
 *
 
 # Whitelist specific files
+!README_java_downloader.md
+!ibm_java_downloader.py
 !excluded_versions.ini
 !bfftool.py
 !ibm_mrs_downloader.py
